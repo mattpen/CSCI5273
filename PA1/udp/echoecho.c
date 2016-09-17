@@ -1,17 +1,16 @@
-// #include <sys/socket.h>
-// #include <netinet/in.h>
-// #include <arpa/inet.h>
-// #include <netdb.h>
-// #include <unistd.h>
-// #include <signal.h>
-// #include <fcntl.h>
-// #include <errno.h>
-// #include <sys/time.h>
-// #include <memory.h>
-// #include <errno.h>
-    #include <stdio.h>
-    #include <stdlib.h>
-    #include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <unistd.h>
+#include <signal.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/time.h>
+#include <stdlib.h>
+#include <memory.h>
+#include <errno.h>
 
     #define MAX_STRING_SIZE 100
 
@@ -27,9 +26,13 @@
       succ(j);
     }
     int main() {
-      char a[] = "1234";
-      char *b = a;
-      b += 1;
-      printf("%i:%s, %i:%s\n", *a, a, *b, b);
+      int num = 34;
 
+      char longstr[MAX_STRING_SIZE], frame[MAX_STRING_SIZE];
+      sprintf(longstr, "abcdefghijklmnopqrstuvwxyabcdefghijklmnopqrstuvwxyabcdefghijklmnopqrstuvwxyabcdefghijklmnopqrstuvwxy");
+      snprintf(frame, MAX_STRING_SIZE, "%8d%s",num , longstr);
+      printf("%s\n", frame);
+
+      snprintf(frame, MAX_STRING_SIZE, "%3d%s",num , longstr + 3);
+      printf("%s\n", frame);
     }

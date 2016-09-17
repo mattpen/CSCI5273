@@ -13,6 +13,7 @@
 #include <errno.h>
 
 #define MAXBUFSIZE 100
+#define INITREQSIZE 256
 
 // Append src at the end of dest, allocating new memory if necessary
 void concat(char **dest, int *dest_len, int *dest_size, char *src) {
@@ -25,21 +26,62 @@ void concat(char **dest, int *dest_len, int *dest_size, char *src) {
     *dest_len += strlen(src);
 }
 
+int writeputrequest(char **request, int *request_len, int *request_size, char* filename) {
+	FILE *fp;
+	char line[10];
+	int i;
+
+	// Overwrite new line appended to command 
+	filename[strlen(filename) - 1] = '\0';
+	
+	// Clear filepath and set to './' + filename
+	char *curdir = "./";
+	char *filepath = malloc(strlen(curdir) + strlen(filename) + 1);
+	for (i=0; i<sizeof(filepath); i++) {
+		filepath[i] = '\0';
+	}
+	strcat(filepath, curdir);
+	strcat(filepath, filename);
+
+	// Attempt to open the file
+	fp = fopen(filepath, "r");
+	if (fp == NULL) {
+		printf("PUT: FILE NOT FOUND\n");	
+		return 0;
+	}
+
+
+	/* Read the output a line at a time and write to the request. */
+  while (fgets(line, sizeof(line) - 1, fp) != NULL) {
+  	concat(request, request_len, request_size, line);
+  }
+
+  /* close file */
+  fclose(fp);
+  return 1;
+}
+
+void sendstopandwait()
 
 int main (int argc, char * argv[])
 {
-
-	int nbytes;                             // number of bytes send by sendto()
-	int sock;                               //this will be our socket
-	char buffer[MAXBUFSIZE], buf[MAXBUFSIZE];
-
-	struct sockaddr_in remote;              //"Internet socket address structure"
 
 	if (argc < 3)
 	{
 		printf("USAGE:  <server_ip> <server_port>\n");
 		exit(1);
 	}
+
+	int nbytes;                             							// number of bytes send by sendto()
+	int sock;                               							//this will be our socket
+	char buffer[MAXBUFSIZE], buf[MAXBUFSIZE], frame[MAXBUFSIZE];
+	struct sockaddr_in remote;              							//"Internet socket address structure"
+	int request_len = 0;																	//number of char stored in request
+	int request_size = INITREQSIZE;												//maximum number of char allowed in request
+	char *request = malloc(request_size * sizeof(char));	//request to write to client
+	int put_success = 0;
+	int response_received = 0;
+	char seq_string[8];
 
 	/******************
 	  Here we populate a sockaddr_in struct with
@@ -56,18 +98,70 @@ int main (int argc, char * argv[])
 	{
 		printf("unable to create socket");
 	}
+
+	// Set timeout for socket to 100ms
+	struct timeval tv;
+	tv.tv_sec = 0;
+	tv.tv_usec = 100000;
+	if (setsockopt(rcv_sock, SOL_SOCKET, SO_RCVTIMEO,&tv,sizeof(tv)) < 0) {
+	    perror("Error");
+	}
 	
 	char command[MAXBUFSIZE];
 	printf("Enter a command (get {filename}, put {filename}, ls, or exit):\n");
 	while (fgets(command, sizeof(command), stdin)) {
+
+		if ( strncmp(command, "put ", 4) == 0 ) {
+			bzero(request,sizeof(request));
+			request_len = 0;
+
+			struct sockaddr_in from_addr;
+			int addr_length = sizeof(struct sockaddr);
+			
+
+			put_success = writeputrequest(&request, &request_len, &request_size, command + 4);
+			if (put_success == 1) {
+				response_received = 0;
+				while (response_received == 0) {
+					nbytes = sendto( sock, "START", sizeof("START"), 0, (struct sockaddr*)&remote, sizeof(remote));
+					bzero(buffer,sizeof(buffer));
+					nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
+					if ( strncmp(buffer, "ACK START", 9) == 0 ) {
+						response_received = 1;
+					}
+				}
+
+				seq = 0;
+				for(; i < end; i += MAXBUFSIZE-9) {
+					response_received = 0;
+					bzero(seqString);
+					sprintf(seqString, "%8d", seq);
+					bzero(frame);
+					snprintf(frame, MAXBUFSIZE, "%8d%s", seq, i);
+					while (response_received == 0) {
+						nbytes = sendto( sock, frame, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
+						bzero(buffer,sizeof(buffer));
+						nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
+						if ( strncmp(buffer, seqString, strlen(seqString)) == 0 ) {
+							response_received = 1;
+						}
+					}
+					seq++;
+				}
+				nbytes = sendto( sock, "END", sizeof("END"), 0, (struct sockaddr*)&remote, sizeof(remote));							
+			}
+			else {
+				continue;
+			}
+		}
+		else {
+			nbytes = sendto( sock, command, sizeof(command), 0, (struct sockaddr*)&remote, sizeof(remote));
+		}
 		/******************
 		  sendto() sends immediately.  
 		  it will report an error if the message fails to leave the computer
 		  however, with UDP, there is no error if the message is lost in the network once it leaves the computer.
 		 ******************/
-		// char command[] = "apple";	
-		nbytes = sendto( sock, command, sizeof(command), 0, 
-			(struct sockaddr*)&remote, sizeof(remote));
 
 		// Blocks till bytes are received
 		struct sockaddr_in from_addr;

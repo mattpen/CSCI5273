@@ -47,6 +47,7 @@ void writegetresponse(char **response, int *response_len, int *response_size, ch
 	// Clear filepath and set to './' + filename
 	char *curdir = "./";
 	char *filepath = malloc(strlen(curdir) + strlen(filename) + 1);
+	// TODO: replace with bzero?
 	for (i=0; i<sizeof(filepath); i++) {
 		filepath[i] = '\0';
 	}
@@ -148,8 +149,6 @@ int main (int argc, char * argv[]) {
 			(struct sockaddr*)&remote, &remote_length);
 		printf("server: The client says %s", request);
 
-		
-
 		// Parse command from beginning of the request
 		if ( strncmp(request, "get ", 4) == 0 ) {
 			writegetresponse(&response, &response_len, &response_size, request + 4);
@@ -178,7 +177,6 @@ int main (int argc, char * argv[]) {
 			char *const end = response + response_len;
 			nbytes = sendto( sock, "START", sizeof("START"), 0, (struct sockaddr*)&remote, sizeof(remote));
 			for(; i < end; i += MAXBUFSIZE-1) {
-				//printf("%.*s\n", MAXBUFSIZE, i);
 				nbytes = sendto( sock, i, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
 			}
 			nbytes = sendto( sock, "END", sizeof("END"), 0, (struct sockaddr*)&remote, sizeof(remote));
