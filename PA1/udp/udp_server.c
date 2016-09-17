@@ -22,6 +22,8 @@
 #define MAXBUFSIZE 100
 #define INITRESPSIZE 256
 
+
+
 // Append src at the end of dest, allocating new memory if necessary
 void concat(char **dest, int *dest_len, int *dest_size, char *src) {
 	// If string gets too large, double the size
@@ -37,10 +39,22 @@ void concat(char **dest, int *dest_len, int *dest_size, char *src) {
 void writegetresponse(char **response, int *response_len, int *response_size, char* filename) {	
 	FILE *fp;
 	char line[10];
+	int i;
+
+	// Overwrite new line appended to command 
+	filename[strlen(filename) - 1] = '\0';
+	
+	// Clear filepath and set to './' + filename
+	char *curdir = "./";
+	char *filepath = malloc(strlen(curdir) + strlen(filename) + 1);
+	for (i=0; i<sizeof(filepath); i++) {
+		filepath[i] = '\0';
+	}
+	strcat(filepath, curdir);
+	strcat(filepath, filename);
 
 	// Attempt to open the file
-	// TODO: fix path problem....
-	fp = fopen("/home/phet/CSCI5273/PA1/udp/lf", "r");
+	fp = fopen(filepath, "r");
 	if (fp == NULL) {
 		concat(response, response_len, response_size, "FILE NOT FOUND: ");
 		concat(response, response_len, response_size, filename);	
@@ -164,7 +178,7 @@ int main (int argc, char * argv[]) {
 			char *const end = response + response_len;
 			nbytes = sendto( sock, "START", sizeof("START"), 0, (struct sockaddr*)&remote, sizeof(remote));
 			for(; i < end; i += MAXBUFSIZE-1) {
-				printf("%.*s\n", MAXBUFSIZE, i);
+				//printf("%.*s\n", MAXBUFSIZE, i);
 				nbytes = sendto( sock, i, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
 			}
 			nbytes = sendto( sock, "END", sizeof("END"), 0, (struct sockaddr*)&remote, sizeof(remote));
