@@ -224,11 +224,14 @@ int main (int argc, char * argv[]) {
 
 			printf("Server says %s\n", data);
 
+			char datum[12] = "abcdabcdabcd";
+			char fname[4] = "aaaa";
+
 			// Write data to file
 			FILE *fp = fopen(filename, "ab");
 	    if (fp != NULL)
 	    {
-        fputs(data, fp);
+        fputs(datum, fp);
         fclose(fp);
 	    }
 	    fprintf(stderr, "file written!\n");
