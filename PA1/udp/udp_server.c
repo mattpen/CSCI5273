@@ -105,6 +105,7 @@ int main (int argc, char * argv[]) {
 	unsigned int remote_length;         //length of the sockaddr_in structure
 	int nbytes;                         //number of bytes we receive in our message
 	char request[MAXBUFSIZE];            //a request to store our received message
+	char buffer[MAXBUFSIZE];	// used to get data frames for put
 	int response_len = 0;								//number of char stored in response
 	int response_size = INITRESPSIZE;		//maximum number of char allowed in response
 	char *response = malloc(response_size * sizeof(char));											//response to write to client
@@ -145,8 +146,7 @@ int main (int argc, char * argv[]) {
 
 
 		//waits for an incoming message
-		nbytes = recvfrom(sock, request, sizeof(request), 0, 
-			(struct sockaddr*)&remote, &remote_length);
+		nbytes = recvfrom(sock, request, sizeof(request), 0, (struct sockaddr*)&remote, &remote_length);
 		printf("server: The client says %s", request);
 
 		// Parse command from beginning of the request
@@ -154,7 +154,75 @@ int main (int argc, char * argv[]) {
 			writegetresponse(&response, &response_len, &response_size, request + 4);
 		}
 		else if ( strncmp(request, "put ", 4) == 0 ) {
-			snprintf(response, sizeof(response), "PUT NOT IMPLEMENTED YET");
+			// sizeof "put "
+			int cmdsize = 4;
+
+			// Get the ending index for the filename (the index offirst whitespace after "put ")
+			int filenameend;
+			for(filenameend=cmdsize; request[filenameend] != ' '; filenameend++) {
+				if ( request[filenameend] == '\0' ) {
+					printf("filename or size error, recovery not implemented\n");
+					return 0;
+				} 
+			}
+
+			// Parse the filename and filesize from the put command
+			char *filename = malloc(sizeof(char) * (filenameend-cmdsize) + 1);
+			strncpy(filename, request+cmdsize, filenameend-cmdsize);
+			long int filesize = strtol(request + filenameend, NULL, 10);
+
+			// Send ACK for put command to client
+			nbytes = sendto( sock, "ACK PUT", MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
+
+			// data holds the contents of the file to put. It is of length data_len and has max size data_size 
+			// int data_len = 0;
+			// int data_size = 4;
+			char *data = malloc(filesize);
+
+			// control string, first holds the sequence characters then holds the ack characters
+			char *seqstring = malloc(sizeof(char) * 8);
+			long int seq;
+
+			int framesize = MAXBUFSIZE-9;
+
+			bzero(buffer,sizeof(buffer));
+			nbytes = recvfrom(sock, buffer, MAXBUFSIZE-1, 0, (struct sockaddr*)&remote, &remote_length);
+			while ( strncmp(buffer, "END", sizeof("END")) != 0 ){
+				// Resend original ACK
+				if ( strncmp(request, buffer, 4) == 0 ) {
+					nbytes = sendto( sock, "ACK PUT", MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
+				}
+				// Get data and seqnum from the buffer then send the ACK
+				else {
+					// Get the sequence number from the buffer
+					bzero(seqstring, sizeof(seqstring));
+					strncpy(seqstring, buffer, 8);
+	      			seq = strtol(buffer + 4, NULL, 10);
+
+	      			// Write data from frame to memory
+	      			strncpy(data + seq * framesize, buffer + 8, framesize);
+					// concat(&data, &data_len, &data_size, buffer + 8);
+					
+					// Write the ACK and send
+	      			bzero(seqstring, sizeof(seqstring));
+	      			snprintf(seqstring, 8, "ACK %4ld", seq);
+	      			nbytes = sendto( sock, seqstring, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
+				}
+
+				// Get next frame
+				bzero(buffer,sizeof(buffer));
+				nbytes = recvfrom(sock, buffer, MAXBUFSIZE-1, 0, (struct sockaddr*)&remote, &remote_length);
+			}
+
+			printf("Server says %s\n", data);
+
+			// Write data to file
+			FILE *fp = fopen(filename, "ab");
+		    if (fp != NULL)
+		    {
+		        fputs(data, fp);
+		        fclose(fp);
+		    }
 		}
 		else if ( strncmp(request, "ls", 2) == 0 ) {
 			writelsresponse(&response, &response_len, &response_size);

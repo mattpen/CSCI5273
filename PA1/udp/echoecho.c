@@ -13,26 +13,31 @@
 #include <errno.h>
 
     #define MAX_STRING_SIZE 100
+    #define FRAME_SIZE 3
 
-    // void strOp(char *someString) {
-    //   // snprintf( someString, MAX_STRING_SIZE, "0123456789abcdef");
-    //   printf("%s\n", someString);
-    // }
+int main() {
+  char cmd[MAX_STRING_SIZE];
+  strcat(cmd,"put ");
+  strcat(cmd,"long-handsome-filename.txt");
+  strcat(cmd," ");
+  strcat(cmd,"123456789");
+  printf("%s\n", cmd);
 
-    void succ(int *n){
-      *n = *n + 1;
-    }
-    void middle(int *j){
-      succ(j);
-    }
-    int main() {
-      int num = 34;
+  
+  
 
-      char longstr[MAX_STRING_SIZE], frame[MAX_STRING_SIZE];
-      sprintf(longstr, "abcdefghijklmnopqrstuvwxyabcdefghijklmnopqrstuvwxyabcdefghijklmnopqrstuvwxyabcdefghijklmnopqrstuvwxy");
-      snprintf(frame, MAX_STRING_SIZE, "%8d%s",num , longstr);
-      printf("%s\n", frame);
-
-      snprintf(frame, MAX_STRING_SIZE, "%3d%s",num , longstr + 3);
-      printf("%s\n", frame);
-    }
+      
+  // char *longstr = malloc( sizeof( char ) * MAX_STRING_SIZE );
+  // char *i = longstr;
+  // char a[FRAME_SIZE] = "abc";
+  // char b[FRAME_SIZE] = "def";
+  // char c[FRAME_SIZE] = "ghi";
+  
+  // i = longstr + 1 * FRAME_SIZE;
+  // strncpy(i, b, FRAME_SIZE);
+  // i = longstr + 0 * FRAME_SIZE;
+  // strncpy(i, a, FRAME_SIZE);
+  // i = longstr + 2 * FRAME_SIZE;
+  // strncpy(i, c, FRAME_SIZE);
+  // printf("%s\n", longstr);
+}
