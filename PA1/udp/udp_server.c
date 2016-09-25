@@ -180,6 +180,7 @@ int main (int argc, char * argv[]) {
 			// int data_len = 0;
 			// int data_size = 4;
 			char *data = malloc(filesize*(sizeof(char)) + 1);
+			bzero(data,sizeof(data));
 			printf("filesize:%ld::sizeof(char):%ld\n", sizeof(data),sizeof(char));
 
 			// control string, first holds the sequence characters then holds the ack characters
@@ -227,14 +228,14 @@ int main (int argc, char * argv[]) {
 
 			printf("Server says %s\n", data);
 
-			char datum[12] = "abcdabcdabcd";
-			char fname[4] = "aaaa";
+			// char datum[12] = "abcdabcdabcd";
+			// char fname[4] = "aaaa";
 
 			// Write data to file
-			FILE *fp = fopen(fname, "w");
+			FILE *fp = fopen(filename, "w");
 	    if (fp != NULL)
 	    {
-        fputs(datum, fp);
+        fputs(data, fp);
         fclose(fp);
 	    }
 	    fprintf(stderr, "file written!\n");

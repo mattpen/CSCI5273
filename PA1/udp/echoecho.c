@@ -16,12 +16,19 @@
     #define FRAME_SIZE 3
 
 int main() {
-  char seqstring[8] = "seq    0";
-  long int seq = strtol(seqstring + 4, NULL, 10);
-  bzero(seqstring, sizeof(seqstring));
-  sprintf(seqstring, "ACK %4ld", seq);
-  printf("acked: %s\nseq: %ld\n", seqstring, seq);
 
+
+      char datum[12] = "abcdabcdabcd";
+      char fname[4] = "aaaa";
+      printf("Server says %s\n", datum);
+      // Write data to file
+      FILE *fp = fopen(fname, "w");
+      if (fp != NULL)
+      {
+        fputs(datum, fp);
+        fclose(fp);
+      }
+      fprintf(stderr, "file written!\n");
 
   
   
