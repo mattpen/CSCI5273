@@ -169,6 +169,7 @@ int main (int argc, char * argv[]) {
 
 			// Parse the filename and filesize from the put command
 			// char *filename = malloc(sizeof(char) * (filenameend-cmdsize) + 1);
+			bzero(filename,sizeof(filename));
 			strncpy(filename, request+cmdsize, filenameend-cmdsize);
 			long int filesize = strtol(request + filenameend, NULL, 10);
 
@@ -178,7 +179,8 @@ int main (int argc, char * argv[]) {
 			// data holds the contents of the file to put. It is of length data_len and has max size data_size 
 			// int data_len = 0;
 			// int data_size = 4;
-			char *data = malloc(filesize + 1);
+			char *data = malloc(filesize*(sizeof(char)) + 1);
+			printf("filesize:%ld::sizeof(char):%ld\n", sizeof(data),sizeof(char));
 
 			// control string, first holds the sequence characters then holds the ack characters
 			char *seqstring = malloc(sizeof(char) * 8 + 1);
