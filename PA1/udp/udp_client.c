@@ -125,7 +125,7 @@ int main (int argc, char * argv[])
 
 			// Append the size of the file to the put command
 			bzero(filesize,sizeof(filesize));
-			sprintf(filesize, "%ld", request_len * sizeof(char));
+			sprintf(filesize, " %ld", request_len * sizeof(char));
 			strcat(command, filesize);
 
 			if (put_success == 1) {
