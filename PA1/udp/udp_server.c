@@ -231,7 +231,7 @@ int main (int argc, char * argv[]) {
 			char fname[4] = "aaaa";
 
 			// Write data to file
-			FILE *fp = fopen(fname, "ab");
+			FILE *fp = fopen(fname, "w");
 	    if (fp != NULL)
 	    {
         fputs(datum, fp);
