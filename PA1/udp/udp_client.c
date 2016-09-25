@@ -82,6 +82,7 @@ int main (int argc, char * argv[])
 
 	int seq;	//sequence number of the current unACK'd frame
 	char *seqString;
+	char *ackString;
 	char *filesize;
 
 	/******************
@@ -136,11 +137,13 @@ int main (int argc, char * argv[])
 					bzero(buffer,sizeof(buffer));
 
 					// Send put command
+					printf("sending put request\n");
 					nbytes = sendto( sock, command, sizeof(command), 0, (struct sockaddr*)&remote, sizeof(remote));
 
 					//Wait for ACK
 					nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
 					if ( strncmp(buffer, "ACK PUT", 9) == 0 ) {
+						printf("ack received\n");
 						response_received = 1;
 					}
 				}
@@ -151,9 +154,11 @@ int main (int argc, char * argv[])
 				char *const end = request + request_len;
 				for(; i < end; i += MAXBUFSIZE-9) {
 					bzero(seqString,sizeof(seqString));
+					bzero(ackString,sizeof(ackString));
 					bzero(frame,sizeof(frame));
 
 					sprintf(seqString, "SEQ %4d", seq);
+					sprintf(ackString, "ACK %4d", seq);
 					snprintf(frame, MAXBUFSIZE, "%8d%s", seq, i);
 
 					response_received = 0;
@@ -161,8 +166,13 @@ int main (int argc, char * argv[])
 						bzero(buffer,sizeof(buffer));
 						nbytes = sendto( sock, frame, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
 						nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
-						if ( strncmp(buffer, seqString, strlen(seqString)) == 0 ) {
+						printf("sending data: %s\n", seqString);
+						if ( strncmp(buffer, ackString, strlen(seqString)) == 0 ) {
+							printf("ACK received: %s\n",buffer);
 							response_received = 1;
+						}
+						else {
+							printf("got this when waiting: %s\n", buffer);
 						}
 					}
 
@@ -181,7 +191,9 @@ int main (int argc, char * argv[])
 					bzero(buffer,sizeof(buffer));
 					nbytes = sendto( sock, "END", sizeof("END"), 0, (struct sockaddr*)&remote, sizeof(remote));	
 					nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
+					printf("sent end\n");
 					if ( strncmp(buffer, "ACK END", 9) == 0 ) {
+						printf("recvd ack end\n");
 						response_received = 1;
 					}
 				}

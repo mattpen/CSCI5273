@@ -185,11 +185,16 @@ int main (int argc, char * argv[]) {
 
 			int framesize = MAXBUFSIZE-9;
 
+
+			printf("received put cmd: %s\n", request);
+
 			bzero(buffer,sizeof(buffer));
 			nbytes = recvfrom(sock, buffer, MAXBUFSIZE-1, 0, (struct sockaddr*)&remote, &remote_length);
 			while ( strncmp(buffer, "END", sizeof("END")) != 0 ){
+
 				// Resend original ACK
 				if ( strncmp(request, buffer, 4) == 0 ) {
+					printf("resending ack put\n");
 					nbytes = sendto( sock, "ACK PUT", MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
 				}
 				// Get data and seqnum from the buffer then send the ACK
@@ -197,16 +202,18 @@ int main (int argc, char * argv[]) {
 					// Get the sequence number from the buffer
 					bzero(seqstring, sizeof(seqstring));
 					strncpy(seqstring, buffer, 8);
-	      			seq = strtol(buffer + 4, NULL, 10);
+					printf("rcvd seqString: %s\n", seqString);
+					seq = strtol(buffer + 4, NULL, 10);
 
-	      			// Write data from frame to memory
-	      			strncpy(data + seq * framesize, buffer + 8, framesize);
+					// Write data from frame to memory
+					strncpy(data + seq * framesize, buffer + 8, framesize);
 					// concat(&data, &data_len, &data_size, buffer + 8);
 					
 					// Write the ACK and send
-	      			bzero(seqstring, sizeof(seqstring));
-	      			snprintf(seqstring, 8, "ACK %4ld", seq);
-	      			nbytes = sendto( sock, seqstring, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
+					bzero(seqstring, sizeof(seqstring));
+					snprintf(seqstring, 8, "ACK %4ld", seq);
+					nbytes = sendto( sock, seqstring, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
+					printf("acked: %s\n", seqString);
 				}
 
 				// Get next frame
