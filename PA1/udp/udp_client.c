@@ -86,6 +86,8 @@ int main (int argc, char * argv[])
 	char seqString[8];
 	char ackString[8];
 	char filesize[MAXBUFSIZE];
+	char filename[MAXBUFSIZE];
+	int filenameend;
 
 	/******************
 	  Here we populate a sockaddr_in struct with
@@ -112,7 +114,7 @@ int main (int argc, char * argv[])
 	}
 	
 	char command[MAXBUFSIZE];
-	printf("Enter a command (get {filename}, put {filename}, ls, or exit):\nfilenames with spaces are not supported");
+	printf("Enter a command (get {filename}, put {filename}, ls, or exit):\nFilenames with spaces are not supported.\nCommands must be in all lowercase.\n\n");
 
 	while (fgets(command, sizeof(command), stdin)) {
 
@@ -135,13 +137,14 @@ int main (int argc, char * argv[])
 				//Resend command after timeout until ACK is received
 				response_received = 0;
 				while (response_received == 0) {
-					bzero(buffer,sizeof(buffer));
+					
 
 					// Send put command
 					printf("sending put request\n");
 					nbytes = sendto( sock, command, sizeof(command), 0, (struct sockaddr*)&remote, sizeof(remote));
 
 					//Wait for ACK
+					bzero(buffer,sizeof(buffer));
 					nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
 					if ( strncmp(buffer, "ACK PUT", 9) == 0 ) {
 						printf("ack put rcvd\n");
@@ -167,11 +170,14 @@ int main (int argc, char * argv[])
 
 					response_received = 0;
 					while (response_received == 0) {
-						nbytes = sendto( sock, frame, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
-						bzero(buffer,sizeof(buffer));
-						nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
 						printf("sending data: %s\n", seqString);
-						if ( strncmp(buffer, ackString, strlen(seqString)) == 0 ) {
+						nbytes = sendto( sock, frame, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
+
+						bzero(buffer,sizeof(buffer));
+						nbytes = recvfrom(sock, buffer, sizeof(seqString), 0, (struct sockaddr*)&from_addr, &addr_length);
+						printf("got response:%s\n", buffer);
+
+						if ( strncmp(buffer, ackString, 8) == 0 ) {
 							printf("ACK received: %s\n",buffer);
 							response_received = 1;
 						}
@@ -188,20 +194,7 @@ int main (int argc, char * argv[])
 					else {
 						seq++;
 					}
-				}
-
-				response_received = 0;
-				while (response_received == 0) {
-					bzero(buffer,sizeof(buffer));
-					nbytes = sendto( sock, "END", sizeof("END"), 0, (struct sockaddr*)&remote, sizeof(remote));	
-					nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
-					printf("sent end\n");
-					if ( strncmp(buffer, "ACK END", 9) == 0 ) {
-						printf("recvd ack end\n");
-						response_received = 1;
-					}
-				}
-										
+				}						
 			}
 			else {
 				continue;
@@ -220,25 +213,41 @@ int main (int argc, char * argv[])
 			int addr_length = sizeof(struct sockaddr);
 			bzero(buffer,sizeof(buffer));
 			nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
-			printf("Server says %s\n", buffer);
+			// printf("Server says %s\n", buffer);
 
 			if ( strncmp(buffer, "EXIT", 4) == 0 ) {
 				close(sock);
 				return 0;
 			}
-			else if( strncmp(buffer, "START", sizeof("START")) == 0 ) {
+			else {
 				int len = 0;
 				int size = 4;
 				char *longbuffer = malloc(size * sizeof(char));
 
-				bzero(buffer,sizeof(buffer));
-				nbytes = recvfrom(sock, buffer, MAXBUFSIZE-1, 0, (struct sockaddr*)&from_addr, &addr_length);
-				while ( strncmp(buffer, "END", sizeof("END")) != 0 ){
-					concat(&longbuffer, &len, &size, buffer);
+				while (strncmp(buffer, "END", sizeof("END")) != 0 ){
+					if ( strncmp(buffer, "START", sizeof("START")) != 0 ) concat(&longbuffer, &len, &size, buffer);
 					bzero(buffer,sizeof(buffer));
 					nbytes = recvfrom(sock, buffer, MAXBUFSIZE-1, 0, (struct sockaddr*)&from_addr, &addr_length);
 				}
-				printf("Server says %s\n", longbuffer);
+
+				printf("command: %s\n", command);
+				if ( strncmp(command, "get", 3) == 0 ) {
+					bzero(filename, sizeof(filename));
+					for ( filenameend = 4; command[filenameend] != '\0'; filenameend ++) {}
+					strncpy(filename, command + 4, filenameend - 5);
+
+					// Write data to file
+					FILE *fp = fopen(filename, "w");
+			    if (fp != NULL)
+			    {
+		        fputs(longbuffer, fp);
+		        fclose(fp);
+			    }
+			    printf("wrote response to: %s\n", filename);
+				}
+				else {
+					printf("Server says %s\n", longbuffer);
+				}
 			}
 		}
 		
