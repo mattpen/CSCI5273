@@ -16,12 +16,12 @@
     #define FRAME_SIZE 3
 
 int main() {
-  char cmd[MAX_STRING_SIZE];
-  strcat(cmd,"put ");
-  strcat(cmd,"long-handsome-filename.txt");
-  strcat(cmd," ");
-  strcat(cmd,"123456789");
-  printf("%s\n", cmd);
+  char seqstring[8] = "seq    0";
+  long int seq = strtol(seqstring + 4, NULL, 10);
+  bzero(seqstring, sizeof(seqstring));
+  sprintf(seqstring, "ACK %4ld", seq);
+  printf("acked: %s\nseq: %ld\n", seqstring, seq);
+
 
   
   

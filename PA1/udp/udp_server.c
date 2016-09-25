@@ -211,7 +211,7 @@ int main (int argc, char * argv[]) {
 					
 					// Write the ACK and send
 					bzero(seqstring, sizeof(seqstring));
-					snprintf(seqstring, 8, "ACK %4ld", seq);
+					sprintf(seqstring, "ACK %4ld", seq);
 					printf("acked: %s\nseq: %ld\n", seqstring, seq);
 					nbytes = sendto( sock, seqstring, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
 
