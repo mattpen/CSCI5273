@@ -226,11 +226,12 @@ int main (int argc, char * argv[]) {
 
 			// Write data to file
 			FILE *fp = fopen(filename, "ab");
-		    if (fp != NULL)
-		    {
-		        fputs(data, fp);
-		        fclose(fp);
-		    }
+	    if (fp != NULL)
+	    {
+        fputs(data, fp);
+        fclose(fp);
+	    }
+	    fprintf(stderr, "file written!\n");
 		}
 		else if ( strncmp(request, "ls", 2) == 0 ) {
 			writelsresponse(&response, &response_len, &response_size);
