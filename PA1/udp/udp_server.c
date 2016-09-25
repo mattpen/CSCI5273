@@ -111,6 +111,13 @@ int main (int argc, char * argv[]) {
 	int response_size = INITRESPSIZE;		//maximum number of char allowed in response
 	char *response = malloc(response_size * sizeof(char));											//response to write to client
 
+	// control string, first holds the sequence characters then holds the ack characters
+	char seqstring[8];
+	long int seq;
+	int filenameend;
+	int framesize = MAXBUFSIZE-9;
+	long int filesize;
+
 	/******************
 	  This code populates the sockaddr_in struct with
 	  the information about our socket
@@ -159,7 +166,7 @@ int main (int argc, char * argv[]) {
 			int cmdsize = 4;
 
 			// Get the ending index for the filename (the index offirst whitespace after "put ")
-			int filenameend;
+			filenameend;
 			for(filenameend=cmdsize; request[filenameend] != ' '; filenameend++) {
 				if ( request[filenameend] == '\0' ) {
 					printf("filename or size error, recovery not implemented\n");
@@ -171,7 +178,7 @@ int main (int argc, char * argv[]) {
 			// char *filename = malloc(sizeof(char) * (filenameend-cmdsize) + 1);
 			bzero(filename,sizeof(filename));
 			strncpy(filename, request+cmdsize, filenameend-cmdsize);
-			long int filesize = strtol(request + filenameend, NULL, 10);
+			filesize = strtol(request + filenameend, NULL, 10);
 
 			// Send ACK for put command to client
 			nbytes = sendto( sock, "ACK PUT", MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
@@ -183,11 +190,7 @@ int main (int argc, char * argv[]) {
 			bzero(data,sizeof(data));
 			printf("filesize:%ld::sizeof(char):%ld\n", sizeof(data),sizeof(char));
 
-			// control string, first holds the sequence characters then holds the ack characters
-			char *seqstring = malloc(sizeof(char) * 8 + 1);
-			long int seq;
-
-			int framesize = MAXBUFSIZE-9;
+			
 
 
 			printf("received put cmd: %s\n", request);
