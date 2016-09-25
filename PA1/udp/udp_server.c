@@ -106,6 +106,7 @@ int main (int argc, char * argv[]) {
 	int nbytes;                         //number of bytes we receive in our message
 	char request[MAXBUFSIZE];            //a request to store our received message
 	char buffer[MAXBUFSIZE];	// used to get data frames for put
+	char filename[MAXBUFSIZE];
 	int response_len = 0;								//number of char stored in response
 	int response_size = INITRESPSIZE;		//maximum number of char allowed in response
 	char *response = malloc(response_size * sizeof(char));											//response to write to client
@@ -167,7 +168,7 @@ int main (int argc, char * argv[]) {
 			}
 
 			// Parse the filename and filesize from the put command
-			char *filename = malloc(sizeof(char) * (filenameend-cmdsize) + 1);
+			// char *filename = malloc(sizeof(char) * (filenameend-cmdsize) + 1);
 			strncpy(filename, request+cmdsize, filenameend-cmdsize);
 			long int filesize = strtol(request + filenameend, NULL, 10);
 
@@ -177,10 +178,10 @@ int main (int argc, char * argv[]) {
 			// data holds the contents of the file to put. It is of length data_len and has max size data_size 
 			// int data_len = 0;
 			// int data_size = 4;
-			char *data = malloc(filesize);
+			char *data = malloc(filesize + 1);
 
 			// control string, first holds the sequence characters then holds the ack characters
-			char *seqstring = malloc(sizeof(char) * 8);
+			char *seqstring = malloc(sizeof(char) * 8 + 1);
 			long int seq;
 
 			int framesize = MAXBUFSIZE-9;
