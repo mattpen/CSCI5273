@@ -202,8 +202,8 @@ int main (int argc, char * argv[]) {
 					// Get the sequence number from the buffer
 					bzero(seqstring, sizeof(seqstring));
 					strncpy(seqstring, buffer, 8);
-					printf("rcvd seqString: %s\n", seqstring);
-					seq = strtol(buffer + 4, NULL, 10);
+					seq = strtol(seqstring + 4, NULL, 10);
+					printf("rcvd seqString: %s\nparsed seq:%ld\n", seqstring, seq);
 
 					// Write data from frame to memory
 					strncpy(data + seq * framesize, buffer + 8, framesize);
@@ -212,8 +212,9 @@ int main (int argc, char * argv[]) {
 					// Write the ACK and send
 					bzero(seqstring, sizeof(seqstring));
 					snprintf(seqstring, 8, "ACK %4ld", seq);
+					printf("acked: %s\nseq: %ld\n", seqstring, seq);
 					nbytes = sendto( sock, seqstring, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
-					printf("acked: %s\n", seqstring);
+
 				}
 
 				// Get next frame

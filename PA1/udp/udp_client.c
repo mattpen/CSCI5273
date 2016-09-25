@@ -72,7 +72,9 @@ int main (int argc, char * argv[])
 
 	int nbytes;                             							// number of bytes send by sendto()
 	int sock;                               							//this will be our socket
-	char buffer[MAXBUFSIZE], buf[MAXBUFSIZE], frame[MAXBUFSIZE];
+	char buffer[MAXBUFSIZE];
+	char buf[MAXBUFSIZE];
+	char frame[MAXBUFSIZE];
 	struct sockaddr_in remote;              							//"Internet socket address structure"
 	int request_len = 0;																	//number of char stored in request
 	int request_size = INITREQSIZE;												//maximum number of char allowed in request
@@ -81,9 +83,9 @@ int main (int argc, char * argv[])
 	int response_received = 0;
 
 	int seq;	//sequence number of the current unACK'd frame
-	char *seqString;
-	char *ackString;
-	char *filesize;
+	char seqString[8];
+	char ackString[8];
+	char filesize[MAXBUFSIZE];
 
 	/******************
 	  Here we populate a sockaddr_in struct with
@@ -120,7 +122,6 @@ int main (int argc, char * argv[])
 
 			struct sockaddr_in from_addr;
 			int addr_length = sizeof(struct sockaddr);
-			
 
 			put_success = writeputrequest(&request, &request_len, &request_size, command + 4);
 
@@ -143,7 +144,7 @@ int main (int argc, char * argv[])
 					//Wait for ACK
 					nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
 					if ( strncmp(buffer, "ACK PUT", 9) == 0 ) {
-						printf("ack received\n");
+						printf("ack put rcvd\n");
 						response_received = 1;
 					}
 				}
@@ -157,14 +158,17 @@ int main (int argc, char * argv[])
 					bzero(ackString,sizeof(ackString));
 					bzero(frame,sizeof(frame));
 
+					fprintf(stderr, "zeroed frame\n");
+
 					sprintf(seqString, "SEQ %4d", seq);
 					sprintf(ackString, "ACK %4d", seq);
-					snprintf(frame, MAXBUFSIZE, "%8d%s", seq, i);
+					snprintf(frame, MAXBUFSIZE, "%s%s", seqString, i);
+					
 
 					response_received = 0;
 					while (response_received == 0) {
-						bzero(buffer,sizeof(buffer));
 						nbytes = sendto( sock, frame, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
+						bzero(buffer,sizeof(buffer));
 						nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
 						printf("sending data: %s\n", seqString);
 						if ( strncmp(buffer, ackString, strlen(seqString)) == 0 ) {
