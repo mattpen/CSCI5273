@@ -213,7 +213,7 @@ int main (int argc, char * argv[]) {
 					printf("rcvd seqString: %s\nparsed seq:%ld\n", seqstring, seq);
 
 					// Write data from frame to memory
-					strncpy(data + seq * framesize, buffer + 8, framesize);
+					strncpy(data + seq * framesize, buffer + 8, framesize - 1 );
 					// concat(&data, &data_len, &data_size, buffer + 8);
 					
 					// Write the ACK and send
