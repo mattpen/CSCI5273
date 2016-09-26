@@ -136,7 +136,8 @@ int main (int argc, char * argv[])
 			strcat(command, filesize);
 		}
 
-		if ( request_len > 0 || strncmp( command, "put ", 4 ) != 0 ) {
+		// If we are sending a put and the filesize is 0 don't do anything.
+		if (strncmp( command, "put ", 4 ) != 0  || request_len > 0) {
 			
 			//Resend command after timeout until ACK is received
 			response_received = 0;
@@ -155,7 +156,7 @@ int main (int argc, char * argv[])
 			}
 
 			// send request string (for put)
-			if ( request_len > 0 )
+			if ( request_len > 0 ) {
 				seq = 0;
 				char *i = request;
 				char *const end = request + request_len;
