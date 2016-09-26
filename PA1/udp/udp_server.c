@@ -22,32 +22,6 @@
 #define MAXBUFSIZE 100
 #define INITRESPSIZE 256
 
-
-
-// // Append src at the end of dest, allocating new memory if necessary
-// void concat(char **dest, int *dest_len, int dest_size, char *src) {
-// 	// If string gets too large, double the size
-// 	if (*dest_len + strlen(src) > dest_size) {
-// 		char **newstr;
-// 		long int new_size = dest_size;
-// 		while (*dest_len + strlen(src) > new_size) {
-// 			new_size *= 2;
-// 		}
-// 		printf("%s\n", dest);
-// 		printf("%s\n", src);
-// 		printf("%ld\n", new_size);
-// 		*newstr = calloc(new_size, sizeof(char));
-// 		bzero(*newstr, sizeof(*newstr));
-// 		strcat(*newstr, *dest);
-// 		strcat(*newstr, src);
-// 		dest = newstr;
-// 	}
-// 	else {
-// 	  strcat(*dest, src); 
-// 	}
-// 	*dest_len += strlen(src);
-// }
-
 // if ./{filename} exists, write it to the response
 char* writegetresponse(char *filename, int *response_len) {	
 	FILE *fp;
@@ -57,7 +31,6 @@ char* writegetresponse(char *filename, int *response_len) {
 	int str_size = 256;
 	int str_len = 0;
 	char *response = calloc(str_size,sizeof(char));
-	
 
 	// Overwrite new line appended to command 
 	filename[strlen(filename) - 1] = '\0';
@@ -65,10 +38,6 @@ char* writegetresponse(char *filename, int *response_len) {
 	// Clear filepath and set to './' + filename
 	char *curdir = "./";
 	char *filepath = calloc(sizeof(curdir) + sizeof(filename) + 1, sizeof(char));
-	// TODO: replace with bzero?
-	for (i=0; i<sizeof(filepath); i++) {
-		filepath[i] = '\0';
-	}
 	strcat(filepath, curdir);
 	strcat(filepath, filename);
 
@@ -76,27 +45,22 @@ char* writegetresponse(char *filename, int *response_len) {
 	fp = fopen(filepath, "r");
 	if (fp == NULL) {
 		sprintf(response, "FILE NOT FOUND: %s", filename);
+		response_len = 0;
 		return;
 	}
 
-
 	/* Read the output a line at a time and write to the response. */
   while (fgets(line, sizeof(line) - 1, fp) != NULL) {
-  	printf("reading line: %s\n", line);
   	if ( str_len + sizeof(line) > str_size ) {
-  		printf("resizing oldsize: %ld\n", sizeof(response));
   		str_size = str_len + 10*sizeof(line);
   		response = realloc(response, (str_size + 1) * sizeof(char));
-  		printf("resizing newsize%ld\n", sizeof(response));
   	}
   	str_len += sizeof(line);
   	strcat(response, line);
-  	printf("added to response\n");
   }
 
   /* close file */
   fclose(fp);	
-  printf("inget:%s\n", response);
   *response_len = str_len;
   return response;
 }
@@ -149,12 +113,11 @@ int main (int argc, char * argv[]) {
 	struct sockaddr_in sin, remote;     //"Internet socket address structure"
 	unsigned int remote_length;         //length of the sockaddr_in structure
 	int nbytes;                         //number of bytes we receive in our message
-	char request[MAXBUFSIZE];            //a request to store our received message
-	char buffer[MAXBUFSIZE];	// used to get data frames for put
+	char request[MAXBUFSIZE];           //a request to store our received message
+	char buffer[MAXBUFSIZE];						// used to get data frames for put
 	char filename[MAXBUFSIZE];
 	int response_len = 0;								//number of char stored in response
-	int response_size = INITRESPSIZE;		//maximum number of char allowed in response
-	char *response = calloc(response_size, sizeof(char));											//response to write to client
+	char *response = calloc(INITRESPSIZE, sizeof(char));	//response to write to client
 
 
 	// control string, first holds the sequence characters then holds the ack characters
@@ -207,13 +170,12 @@ int main (int argc, char * argv[]) {
 		if ( strncmp(request, "get ", 4) == 0 ) {
 			free(response);
 			response = writegetresponse(request + 4, &response_len);
-			printf("inmain:%s\n", response);
 		}
 		else if ( strncmp(request, "put ", 4) == 0 ) {
 			// sizeof "put "
 			int cmdsize = 4;
 
-			// Get the ending index for the filename (the index offirst whitespace after "put ")
+			// Get the ending index for the filename from the request string (the index offirst whitespace after "put ")
 			filenameend;
 			for(filenameend=cmdsize; request[filenameend] != ' '; filenameend++) {
 				if ( request[filenameend] == '\0' ) {
@@ -231,17 +193,11 @@ int main (int argc, char * argv[]) {
 			// Send ACK for put command to client
 			nbytes = sendto( sock, "ACK PUT", MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
 
-			// data holds the contents of the file to put. It is of length data_len and has max size data_size 
-			// int data_len = 0;
-			// int data_size = 4;
+			// Data holds the contents of the file to put.
 			char *data = malloc(filesize*(sizeof(char)) + 1);
 			bzero(data,sizeof(data));
-			printf("filesize:%ld::sizeof(char):%ld\n", sizeof(data),sizeof(char));
-			printf("received put cmd: %s\n", request);
 
-			// bzero(buffer,sizeof(buffer));
-			// nbytes = recvfrom(sock, buffer, MAXBUFSIZE-1, 0, (struct sockaddr*)&remote, &remote_length);
-			// while ( strncmp(buffer, "END", sizeof("END")) != 0 ){
+			// receive data until file is full
 			while ( strlen(data) < filesize ) {
 				printf("filesize rcv/tot:%ld/%ld\n", strlen(data), filesize);
 
@@ -249,16 +205,14 @@ int main (int argc, char * argv[]) {
 				bzero(buffer,sizeof(buffer));
 				nbytes = recvfrom(sock, buffer, MAXBUFSIZE-1, 0, (struct sockaddr*)&remote, &remote_length);
 				
-				// Resend original ACK if necessary
 				if ( strncmp(request, buffer, 4) == 0 ) {
+					// Resend original ACK if necessary
 					printf("resending ack put\n");
 					nbytes = sendto(sock, "ACK PUT", MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
 				}
-				// Get data and seqnum from the buffer then send the ACK
 				else {
 					// Get the sequence number from the buffer
 					bzero(seqstring, sizeof(seqstring));
-
 					strncpy(seqstring, buffer, sizeof(seqstring));
 					printf("seqstring:%s\n", seqstring);
 					seq = strtol(seqstring+4, NULL, 10);
@@ -273,13 +227,11 @@ int main (int argc, char * argv[]) {
 					printf("acked: %s::\nseq: %ld::\n", seqstring, seq);
 					nbytes = sendto(sock, seqstring, sizeof(seqstring), 0, (struct sockaddr*)&remote, sizeof(remote));
 					if (nbytes < 0) {
-						printf("errno:%d\n", errno);
+						printf("Error sending ACK: errno=%d\n", errno);
 					}
-					printf("nbytes: %d::\n", nbytes);
 				}
 
 			}
-			printf("done writing\n");
 
 			// Write data to file
 			FILE *fp = fopen(filename, "w");
@@ -294,36 +246,30 @@ int main (int argc, char * argv[]) {
 		else if ( strncmp(request, "ls", 2) == 0 ) {
 			free( response );
 			response = writelsresponse(&response_len);
-			printf("inmain:%s\n", response);
 		}		
+		// Tell client command was received, close sock and exit gracefully
 		else if ( strncmp(request, "exit", 4) == 0 ) {
 			strcat(response, "EXIT");
 			nbytes = sendto( sock, response, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
 			close(sock);
 			return 0;
 		}
+		// Send response for command not recognized
 		else {
 			strcat(response, "NOT RECOGNIZED: ");
 			strncat(response, request, MAXBUFSIZE - 17);
-		}
+		}	
 
-		printf("this should not be printed after a put\n");
+		
 		// send response to client
-		// if ( strlen(response) < MAXBUFSIZE ) {
-		if ( 1 == 2 ) {
-			printf("sending single frame\n");
-			nbytes = sendto( sock, response, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
+		// TODO: reuse stop-and-wait from put block
+		char *response_index = response;
+		char *const end_of_response = response + response_len;
+		nbytes = sendto( sock, "START", MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
+		for(; response_index < end_of_response; i += MAXBUFSIZE-1) {
+			nbytes = sendto( sock, response_index, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
 		}
-		else {
-			printf("sending multi frame\n");
-			char *i = response;
-			char *const end = response + response_len;
-			nbytes = sendto( sock, "START", MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
-			for(; i < end; i += MAXBUFSIZE-1) {
-				nbytes = sendto( sock, i, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
-			}
-			nbytes = sendto( sock, "END", MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
-		}		
+		nbytes = sendto( sock, "END", MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
 	}
 }
 

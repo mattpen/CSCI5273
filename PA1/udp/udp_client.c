@@ -1,3 +1,10 @@
+/**
+	* CSCI5273 Network Systems
+	* Programming Assignment 1 - udp ftp server
+	* Matt Pennington - mape5853
+	*
+	**/
+
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -15,50 +22,46 @@
 #define MAXBUFSIZE 100
 #define INITREQSIZE 256
 
-// Append src at the end of dest, allocating new memory if necessary
-void concat(char **dest, int *dest_len, int *dest_size, char *src) {
-	// If string gets too large, double the size
-  	while (*dest_len + strlen(src) > *dest_size) {
-  		*dest_size *= 2;
-  		*dest = realloc(*dest, *dest_size * sizeof(char));
-  	}
-    strncat(*dest, src, strlen(src));
-    *dest_len += strlen(src);
-}
-
-int writeputrequest(char **request, int *request_len, int *request_size, char* filename) {
+char* writeputrequest(char* filename, int *request_len) {
 	FILE *fp;
 	char line[10];
 	int i;
+
+	int str_size = 256;
+	int str_len = 0;
+	char *request = calloc(str_size,sizeof(char));
 
 	// Overwrite new line appended to command 
 	filename[strlen(filename) - 1] = '\0';
 	
 	// Clear filepath and set to './' + filename
 	char *curdir = "./";
-	char *filepath = malloc(strlen(curdir) + strlen(filename) + 1);
-	for (i=0; i<sizeof(filepath); i++) {
-		filepath[i] = '\0';
-	}
+	char *filepath = calloc(sizeof(curdir) + sizeof(filename) + 1, sizeof(char));
 	strcat(filepath, curdir);
 	strcat(filepath, filename);
 
 	// Attempt to open the file
 	fp = fopen(filepath, "r");
 	if (fp == NULL) {
-		printf("PUT: FILE NOT FOUND\n");	
-		return 0;
+		printf("PUT: filename not found\n");	
+		request_len = 0;
+		return request;
 	}
 
-
 	/* Read the output a line at a time and write to the request. */
-  while (fgets(line, sizeof(line) - 1, fp) != NULL) {
-  	concat(request, request_len, request_size, line);
+	while (fgets(line, sizeof(line) - 1, fp) != NULL) {
+  	if ( str_len + sizeof(line) > str_size ) {
+  		str_size = str_len + 10*sizeof(line);
+  		request = realloc(request, (str_size + 1) * sizeof(char));
+  	}
+  	str_len += sizeof(line);
+  	strcat(request, line);
   }
 
   /* close file */
-  fclose(fp);
-  return 1;
+  fclose(fp);	
+  *response_len = str_len;
+  return response;
 }
 
 int main (int argc, char * argv[])
@@ -77,12 +80,11 @@ int main (int argc, char * argv[])
 	char frame[MAXBUFSIZE];
 	struct sockaddr_in remote;              							//"Internet socket address structure"
 	int request_len = 0;																	//number of char stored in request
-	int request_size = INITREQSIZE;												//maximum number of char allowed in request
-	char *request = malloc(request_size * sizeof(char));	//request to write to client
-	int put_success = 0;
+	char *request = malloc(INITREQSIZE * sizeof(char));	//request to write to client
+	char *data;
 	int response_received = 0;
 
-	int seq;	//sequence number of the current unACK'd frame
+	int seq = 0;	//sequence number of the current unACK'd frame
 	char seqString[8];
 	char ackString[8];
 	char filesize[MAXBUFSIZE];
@@ -117,140 +119,289 @@ int main (int argc, char * argv[])
 	printf("Enter a command (get {filename}, put {filename}, ls, or exit):\nFilenames with spaces are not supported.\nCommands must be in all lowercase.\n\n");
 
 	while (fgets(command, sizeof(command), stdin)) {
+		bzero(request,sizeof(request));
+		request_len = 0;
+		send_request = 0;
+
+		struct sockaddr_in from_addr;
+		int addr_length = sizeof(struct sockaddr);
 
 		if ( strncmp(command, "put ", 4) == 0 ) {
-			bzero(request,sizeof(request));
-			request_len = 0;
-
-			struct sockaddr_in from_addr;
-			int addr_length = sizeof(struct sockaddr);
-
-			put_success = writeputrequest(&request, &request_len, &request_size, command + 4);
+			send_request = 1;
+			request = writeputrequest(command + 4, &request_len);
 
 			// Append the size of the file to the put command
 			bzero(filesize,sizeof(filesize));
 			sprintf(filesize, " %ld", request_len * sizeof(char));
 			strcat(command, filesize);
+		}
 
-			if (put_success == 1) {
-				
-				//Resend command after timeout until ACK is received
-				response_received = 0;
-				while (response_received == 0) {
-					
+		if ( request_len > 0 || strncmp( command, "put ", 4 ) != 0 ) {
+			
+			//Resend command after timeout until ACK is received
+			response_received = 0;
+			while (response_received == 0) {
+				// Send command
+				nbytes = sendto( sock, command, sizeof(command), 0, (struct sockaddr*)&remote, sizeof(remote));
 
-					// Send put command
-					printf("sending put request\n");
-					nbytes = sendto( sock, command, sizeof(command), 0, (struct sockaddr*)&remote, sizeof(remote));
-
-					//Wait for ACK
-					bzero(buffer,sizeof(buffer));
-					nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
-					if ( strncmp(buffer, "ACK PUT", 9) == 0 ) {
-						printf("ack put rcvd\n");
-						response_received = 1;
-					}
+				//Wait for ACK
+				bzero(buffer,sizeof(buffer));
+				bzero(ackString, sizeof(ackString));
+				sprintf(ackString, "%s%s", "ACK ", command);
+				nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
+				if ( strcmp(buffer, ackString) == 0 ) {
+					response_received = 1;
 				}
+			}
 
-				// Break the message into frames and use stop-and-wait to send the message reliably
+			// send request string (for put)
+			if ( request_len > 0 )
 				seq = 0;
 				char *i = request;
 				char *const end = request + request_len;
+
+				// break the file into frames and send
 				for(; i < end; i += MAXBUFSIZE-9) {
 					bzero(seqString,sizeof(seqString));
 					bzero(ackString,sizeof(ackString));
 					bzero(frame,sizeof(frame));
 
-					fprintf(stderr, "zeroed frame\n");
-
+					// sequence control string
 					sprintf(seqString, "SEQ %4d", seq);
+					// expected ack string
 					sprintf(ackString, "ACK %4d", seq);
+					// insert control string into the frame
 					snprintf(frame, MAXBUFSIZE, "%s%s", seqString, i);
 					
-
+					// send the frame and wait for ACK
 					response_received = 0;
 					while (response_received == 0) {
-						printf("sending data: %s\n", seqString);
 						nbytes = sendto( sock, frame, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
 
 						bzero(buffer,sizeof(buffer));
 						nbytes = recvfrom(sock, buffer, sizeof(seqString), 0, (struct sockaddr*)&from_addr, &addr_length);
-						printf("got response:%s\n", buffer);
 
+						// if the ACK matches stop listening
 						if ( strncmp(buffer, ackString, 8) == 0 ) {
-							printf("ACK received: %s\n",buffer);
 							response_received = 1;
-						}
-						else {
-							printf("got this when waiting: %s\n", buffer);
 						}
 					}
 
 					// seq must not be more than 4 characters
-					// TODO: evaluate this limit, is it too low or high?
-					if ( seq == 9999 ) {
+					if (seq == 9999) {
 						seq = 0;
 					}
 					else {
 						seq++;
 					}
-				}						
-			}
-			else {
-				continue;
-			}
-		}
-		else {
-			nbytes = sendto( sock, command, sizeof(command), 0, (struct sockaddr*)&remote, sizeof(remote));
-			/******************
-			  sendto() sends immediately.  
-			  it will report an error if the message fails to leave the computer
-			  however, with UDP, there is no error if the message is lost in the network once it leaves the computer.
-			 ******************/
-
-			// Blocks till bytes are received
-			struct sockaddr_in from_addr;
-			int addr_length = sizeof(struct sockaddr);
-			bzero(buffer,sizeof(buffer));
-			nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
-			// printf("Server says %s\n", buffer);
-
-			if ( strncmp(buffer, "EXIT", 4) == 0 ) {
-				close(sock);
-				return 0;
-			}
-			else {
-				int len = 0;
-				int size = 4;
-				char *longbuffer = malloc(size * sizeof(char));
-
-				while (strncmp(buffer, "END", sizeof("END")) != 0 ){
-					if ( strncmp(buffer, "START", sizeof("START")) != 0 ) concat(&longbuffer, &len, &size, buffer);
-					bzero(buffer,sizeof(buffer));
-					nbytes = recvfrom(sock, buffer, MAXBUFSIZE-1, 0, (struct sockaddr*)&from_addr, &addr_length);
 				}
+			}
 
-				printf("command: %s\n", command);
-				if ( strncmp(command, "get", 3) == 0 ) {
+			// receive response for get/ls/exit
+			if (strncmp(command, "put ", 4) != 0) {
+				if (strncmp(command, "get ", 4) == 0) {
 					bzero(filename, sizeof(filename));
-					for ( filenameend = 4; command[filenameend] != '\0'; filenameend ++) {}
-					strncpy(filename, command + 4, filenameend - 5);
-
-					// Write data to file
-					FILE *fp = fopen(filename, "w");
-			    if (fp != NULL)
-			    {
-		        fputs(longbuffer, fp);
-		        fclose(fp);
-			    }
-			    printf("wrote response to: %s\n", filename);
+					strcpy(filename, command+4);
 				}
-				else {
-					printf("Server says %s\n", longbuffer);
+
+				// Parse filesize from initial response
+				response_received = 0;
+				while( response_received == 0 ) {
+					bzero(buffer,sizeof(buffer));
+					nbytes = recvfrom(sock, buffer, MAXBUFSIZE-1, 0, (struct sockaddr*)&remote, &remote_length);
+
+					if (strncmp(buffer, "START ", 6) == 0) {
+						filesize = strtol(buffer + 6, NULL, 10);
+						nbytes = sendto( sock, "ACK START", MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
+						response_received = 1
+					}
+				}
+
+				// buffer holds the contents of the response.
+				free(data)
+				data = calloc(filesize, sizeof(char));
+
+				// receive data until file is full
+				while ( strlen(data) < filesize ) {
+					// Get next frame
+					bzero(buffer,sizeof(buffer));
+					nbytes = recvfrom(sock, buffer, MAXBUFSIZE-1, 0, (struct sockaddr*)&remote, &remote_length);
+				
+					// resend initial ACK if neccessary
+					if (strncmp(buffer, "START ", 6) == 0) {
+						filesize = strtol(buffer + 6, NULL, 10);
+						nbytes = sendto( sock, "ACK START", MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
+						continue;
+					}
+					else if (strncmp(buffer, "SEQ ", 4) == 0) {
+
+						// Get the sequence number from the buffer
+						bzero(seqstring, sizeof(seqstring));
+						strncpy(seqstring, buffer, sizeof(seqstring));
+						seq = strtol(seqstring+4, NULL, 10);
+
+						// Write data from frame to memory
+						strcpy(data + seq * framesize, buffer + 8);
+						
+						// Write the ACK and send
+						bzero(seqstring, sizeof(seqstring));
+						sprintf(seqstring, "ACK %4ld", seq);
+						nbytes = sendto(sock, seqstring, sizeof(seqstring), 0, (struct sockaddr*)&remote, sizeof(remote));
+						if (nbytes < 0) {
+							printf("Error sending ACK: errno=%d\n", errno);
+						}
+					}
+					else {
+						printf("PROCESSING ERROR: %s\n", buffer);
+					}
 				}
 			}
+
+			// write get response to file
+			if (strncmp( command, "get ", 4) == 0) {
+				FILE *fp = fopen(filename, "w");
+		    if (fp != NULL) {
+	        fputs(data, fp);
+	        fclose(fp);
+	        printf("Wrote resonse to file: %s\n", filename);
+		    }
+			}
+			else {
+				printf("Server says:\n%s\n", data);
+			}
 		}
-		
-  }
+	}
+
+
+		// if ( strncmp(command, "put ", 4) == 0 ) {
+		// 	bzero(request,sizeof(request));
+		// 	request_len = 0;
+
+		// 	struct sockaddr_in from_addr;
+		// 	int addr_length = sizeof(struct sockaddr);
+
+		// 	put_success = writeputrequest(&request, &request_len, &request_size, command + 4);
+
+		// 	// Append the size of the file to the put command
+		// 	bzero(filesize,sizeof(filesize));
+		// 	sprintf(filesize, " %ld", request_len * sizeof(char));
+		// 	strcat(command, filesize);
+
+		// 	if (put_success == 1) {
+				
+		// 		//Resend command after timeout until ACK is received
+		// 		response_received = 0;
+		// 		while (response_received == 0) {
+		// 			// Send put command
+		// 			printf("sending put request\n");
+		// 			nbytes = sendto( sock, command, sizeof(command), 0, (struct sockaddr*)&remote, sizeof(remote));
+
+		// 			//Wait for ACK
+		// 			bzero(buffer,sizeof(buffer));
+		// 			nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
+		// 			if ( strncmp(buffer, "ACK PUT", 9) == 0 ) {
+		// 				printf("ack put rcvd\n");
+		// 				response_received = 1;
+		// 			}
+		// 		}
+
+		// 		// Break the message into frames and use stop-and-wait to send the message reliably
+		// 		seq = 0;
+		// 		char *i = request;
+		// 		char *const end = request + request_len;
+		// 		for(; i < end; i += MAXBUFSIZE-9) {
+		// 			bzero(seqString,sizeof(seqString));
+		// 			bzero(ackString,sizeof(ackString));
+		// 			bzero(frame,sizeof(frame));
+
+		// 			fprintf(stderr, "zeroed frame\n");
+
+		// 			sprintf(seqString, "SEQ %4d", seq);
+		// 			sprintf(ackString, "ACK %4d", seq);
+		// 			snprintf(frame, MAXBUFSIZE, "%s%s", seqString, i);
+					
+
+		// 			response_received = 0;
+		// 			while (response_received == 0) {
+		// 				printf("sending data: %s\n", seqString);
+		// 				nbytes = sendto( sock, frame, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
+
+		// 				bzero(buffer,sizeof(buffer));
+		// 				nbytes = recvfrom(sock, buffer, sizeof(seqString), 0, (struct sockaddr*)&from_addr, &addr_length);
+		// 				printf("got response:%s\n", buffer);
+
+		// 				if ( strncmp(buffer, ackString, 8) == 0 ) {
+		// 					printf("ACK received: %s\n",buffer);
+		// 					response_received = 1;
+		// 				}
+		// 				else {
+		// 					printf("got this when waiting: %s\n", buffer);
+		// 				}
+		// 			}
+
+		// 			// seq must not be more than 4 characters
+		// 			// TODO: evaluate this limit, is it too low or high?
+		// 			if ( seq == 9999 ) {
+		// 				seq = 0;
+		// 			}
+		// 			else {
+		// 				seq++;
+		// 			}
+		// 		}						
+		// 	}
+		// }
+		// else {
+
+		// 	nbytes = sendto( sock, command, sizeof(command), 0, (struct sockaddr*)&remote, sizeof(remote));
+		// 	/******************
+		// 	  sendto() sends immediately.  
+		// 	  it will report an error if the message fails to leave the computer
+		// 	  however, with UDP, there is no error if the message is lost in the network once it leaves the computer.
+		// 	 ******************/
+
+		// 	// Blocks till bytes are received
+		// 	struct sockaddr_in from_addr;
+		// 	int addr_length = sizeof(struct sockaddr);
+		// 	bzero(buffer,sizeof(buffer));
+		// 	nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
+		// 	// printf("Server says %s\n", buffer);
+
+		// 	if ( strncmp(buffer, "EXIT", 4) == 0 ) {
+		// 		close(sock);
+		// 		return 0;
+		// 	}
+		// 	else {
+		// 		int len = 0;
+		// 		int size = 4;
+		// 		char *longbuffer = malloc(size * sizeof(char));
+
+		// 		while (strncmp(buffer, "END", sizeof("END")) != 0 ){
+		// 			if ( strncmp(buffer, "START", sizeof("START")) != 0 ) concat(&longbuffer, &len, &size, buffer);
+		// 			bzero(buffer,sizeof(buffer));
+		// 			nbytes = recvfrom(sock, buffer, MAXBUFSIZE-1, 0, (struct sockaddr*)&from_addr, &addr_length);
+		// 		}
+
+		// 		printf("command: %s\n", command);
+		// 		if ( strncmp(command, "get", 3) == 0 ) {
+		// 			bzero(filename, sizeof(filename));
+		// 			for ( filenameend = 4; command[filenameend] != '\0'; filenameend ++) {}
+		// 			strncpy(filename, command + 4, filenameend - 5);
+
+		// 			// Write data to file
+		// 			FILE *fp = fopen(filename, "w");
+		// 	    if (fp != NULL)
+		// 	    {
+		//         fputs(longbuffer, fp);
+		//         fclose(fp);
+		// 	    }
+		// 	    printf("wrote response to: %s\n", filename);
+		// 		}
+		// 		else {
+		// 			printf("Server says %s\n", longbuffer);
+		// 		}
+		// 	}
+		// }
+		// 
+  // }
 }
 
