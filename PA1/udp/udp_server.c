@@ -46,7 +46,7 @@ char* writegetresponse(char *filename, int *response_len) {
 	if (fp == NULL) {
 		sprintf(response, "FILE NOT FOUND: %s", filename);
 		response_len = 0;
-		return;
+		return response;
 	}
 
 	/* Read the output a line at a time and write to the response. */
@@ -78,7 +78,7 @@ char* writelsresponse(int *response_len) {
   /* Open the command for reading. */
   fp = popen("/bin/ls ./", "r");
   if (fp == NULL) {
-  	return;
+  	return "";
   }
   
   /* Read the output a line at a time and write to the response. */
