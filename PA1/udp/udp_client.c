@@ -28,7 +28,6 @@ char* writeputrequest(char* filename, int *request_len) {
 	int i;
 
 	int str_size = 256;
-	int str_len = 0;
 	char *request = calloc(str_size,sizeof(char));
 
 	// Overwrite new line appended to command 
@@ -50,18 +49,17 @@ char* writeputrequest(char* filename, int *request_len) {
 
 	/* Read the output a line at a time and write to the request. */
 	while (fgets(line, sizeof(line) - 1, fp) != NULL) {
-  	if ( str_len + sizeof(line) > str_size ) {
-  		str_size = str_len + 10*sizeof(line);
+  	if ( sizeof(line) > str_size ) {
+  		str_size = 10*sizeof(line);
   		request = realloc(request, (str_size + 1) * sizeof(char));
   	}
-  	str_len += sizeof(line);
   	strcat(request, line);
   }
 
   /* close file */
   fclose(fp);	
-  *response_len = str_len;
-  return response;
+  *request_len = strlen(request);
+  return request;
 }
 
 int main (int argc, char * argv[])
@@ -84,12 +82,14 @@ int main (int argc, char * argv[])
 	char *data;
 	int response_received = 0;
 
-	int seq = 0;	//sequence number of the current unACK'd frame
-	char seqString[8];
-	char ackString[8];
-	char filesize[MAXBUFSIZE];
+	long int seq = 0;	//sequence number of the current unACK'd frame
+	char seqstring[8];
+	char ackstring[8];
+	char filesizestring[MAXBUFSIZE];
 	char filename[MAXBUFSIZE];
 	int filenameend;
+	int filesize;
+	int framesize = MAXBUFSIZE-9;
 
 	/******************
 	  Here we populate a sockaddr_in struct with
@@ -121,19 +121,17 @@ int main (int argc, char * argv[])
 	while (fgets(command, sizeof(command), stdin)) {
 		bzero(request,sizeof(request));
 		request_len = 0;
-		send_request = 0;
 
 		struct sockaddr_in from_addr;
 		int addr_length = sizeof(struct sockaddr);
 
 		if ( strncmp(command, "put ", 4) == 0 ) {
-			send_request = 1;
 			request = writeputrequest(command + 4, &request_len);
 
 			// Append the size of the file to the put command
-			bzero(filesize,sizeof(filesize));
-			sprintf(filesize, " %ld", request_len * sizeof(char));
-			strcat(command, filesize);
+			bzero(filesizestring,sizeof(filesizestring));
+			sprintf(filesizestring, " %ld", request_len * sizeof(char));
+			strcat(command, filesizestring);
 		}
 
 		// If we are sending a put and the filesize is 0 don't do anything.
@@ -147,10 +145,10 @@ int main (int argc, char * argv[])
 
 				//Wait for ACK
 				bzero(buffer,sizeof(buffer));
-				bzero(ackString, sizeof(ackString));
-				sprintf(ackString, "%s%s", "ACK ", command);
+				bzero(ackstring, sizeof(ackstring));
+				sprintf(ackstring, "%s%s", "ACK ", command);
 				nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
-				if ( strcmp(buffer, ackString) == 0 ) {
+				if ( strcmp(buffer, ackstring) == 0 ) {
 					response_received = 1;
 				}
 			}
@@ -163,29 +161,31 @@ int main (int argc, char * argv[])
 
 				// break the file into frames and send
 				for(; i < end; i += MAXBUFSIZE-9) {
-					bzero(seqString,sizeof(seqString));
-					bzero(ackString,sizeof(ackString));
+					bzero(seqstring,sizeof(seqstring));
+					bzero(ackstring,sizeof(ackstring));
 					bzero(frame,sizeof(frame));
 
 					// sequence control string
-					sprintf(seqString, "SEQ %4d", seq);
+					sprintf(seqstring, "SEQ %4ld", seq);
 					// expected ack string
-					sprintf(ackString, "ACK %4d", seq);
+					sprintf(ackstring, "ACK %4ld", seq);
 					// insert control string into the frame
-					snprintf(frame, MAXBUFSIZE, "%s%s", seqString, i);
+					snprintf(frame, MAXBUFSIZE, "%s%s", seqstring, i);
 					
 					// send the frame and wait for ACK
 					response_received = 0;
 					while (response_received == 0) {
+						printf("sending %s\n", seqstring);
 						nbytes = sendto( sock, frame, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
 
 						bzero(buffer,sizeof(buffer));
-						nbytes = recvfrom(sock, buffer, sizeof(seqString), 0, (struct sockaddr*)&from_addr, &addr_length);
+						nbytes = recvfrom(sock, buffer, sizeof(seqstring), 0, (struct sockaddr*)&from_addr, &addr_length);
 
 						// if the ACK matches stop listening
-						if ( strncmp(buffer, ackString, 8) == 0 ) {
+						if ( strncmp(buffer, ackstring, 8) == 0 ) {
 							response_received = 1;
 						}
+						printf("received:%s, expected:%s\n", buffer, ackstring);
 					}
 
 					// seq must not be more than 4 characters
@@ -202,31 +202,31 @@ int main (int argc, char * argv[])
 			if (strncmp(command, "put ", 4) != 0) {
 				if (strncmp(command, "get ", 4) == 0) {
 					bzero(filename, sizeof(filename));
-					strcpy(filename, command+4);
+					strncpy(filename, command+4, strlen(command) - 5);
 				}
 
 				// Parse filesize from initial response
 				response_received = 0;
 				while( response_received == 0 ) {
 					bzero(buffer,sizeof(buffer));
-					nbytes = recvfrom(sock, buffer, MAXBUFSIZE-1, 0, (struct sockaddr*)&remote, &remote_length);
+					nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
 
 					if (strncmp(buffer, "START ", 6) == 0) {
 						filesize = strtol(buffer + 6, NULL, 10);
 						nbytes = sendto( sock, "ACK START", MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
-						response_received = 1
+						response_received = 1;
 					}
 				}
 
 				// buffer holds the contents of the response.
-				free(data)
+				free(data);
 				data = calloc(filesize, sizeof(char));
-
+				printf("filesize: %d\n", filesize);
 				// receive data until file is full
 				while ( strlen(data) < filesize ) {
 					// Get next frame
 					bzero(buffer,sizeof(buffer));
-					nbytes = recvfrom(sock, buffer, MAXBUFSIZE-1, 0, (struct sockaddr*)&remote, &remote_length);
+					nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&from_addr, &addr_length);
 				
 					// resend initial ACK if neccessary
 					if (strncmp(buffer, "START ", 6) == 0) {
@@ -311,27 +311,27 @@ int main (int argc, char * argv[])
 		// 		char *i = request;
 		// 		char *const end = request + request_len;
 		// 		for(; i < end; i += MAXBUFSIZE-9) {
-		// 			bzero(seqString,sizeof(seqString));
-		// 			bzero(ackString,sizeof(ackString));
+		// 			bzero(seqstring,sizeof(seqstring));
+		// 			bzero(ackstring,sizeof(ackstring));
 		// 			bzero(frame,sizeof(frame));
 
 		// 			fprintf(stderr, "zeroed frame\n");
 
-		// 			sprintf(seqString, "SEQ %4d", seq);
-		// 			sprintf(ackString, "ACK %4d", seq);
-		// 			snprintf(frame, MAXBUFSIZE, "%s%s", seqString, i);
+		// 			sprintf(seqstring, "SEQ %4d", seq);
+		// 			sprintf(ackstring, "ACK %4d", seq);
+		// 			snprintf(frame, MAXBUFSIZE, "%s%s", seqstring, i);
 					
 
 		// 			response_received = 0;
 		// 			while (response_received == 0) {
-		// 				printf("sending data: %s\n", seqString);
+		// 				printf("sending data: %s\n", seqstring);
 		// 				nbytes = sendto( sock, frame, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
 
 		// 				bzero(buffer,sizeof(buffer));
-		// 				nbytes = recvfrom(sock, buffer, sizeof(seqString), 0, (struct sockaddr*)&from_addr, &addr_length);
+		// 				nbytes = recvfrom(sock, buffer, sizeof(seqstring), 0, (struct sockaddr*)&from_addr, &addr_length);
 		// 				printf("got response:%s\n", buffer);
 
-		// 				if ( strncmp(buffer, ackString, 8) == 0 ) {
+		// 				if ( strncmp(buffer, ackstring, 8) == 0 ) {
 		// 					printf("ACK received: %s\n",buffer);
 		// 					response_received = 1;
 		// 				}
