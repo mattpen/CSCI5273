@@ -94,7 +94,6 @@ char* writelsresponse(int *response_len) {
   /* close file */
   pclose(fp);	
   *response_len = strlen(response);
-  printf("inget:%d\n%s\n", *response_len, response);
   return response;
 }
 
@@ -152,13 +151,6 @@ int main (int argc, char * argv[]) {
 		printf("unable to bind socket\n");
 	}
 
-	// Set timeout for socket to 100ms
-	struct timeval tv;
-	tv.tv_sec = 0;
-	tv.tv_usec = 100000;
-	if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,&tv,sizeof(tv)) < 0) {
-	    perror("Error");
-	}
 
 
 	remote_length = sizeof(remote);
@@ -179,7 +171,7 @@ int main (int argc, char * argv[]) {
 		}
 		snprintf(commandresponse, MAXBUFSIZE-1,"ACK %s", request);
 		nbytes = sendto(sock, commandresponse, sizeof(commandresponse), 0, (struct sockaddr*)&remote, sizeof(remote));
-		printf("server: The client says %s", request);
+		printf("server: The client says %s\n", request);
 
 		// Parse command from beginning of the request
 		if ( strncmp(request, "get ", 4) == 0 ) {
@@ -214,32 +206,29 @@ int main (int argc, char * argv[]) {
 
 			// receive data until file is full
 			while ( strlen(data) < filesize ) {
-				printf("filesize rcv/tot:%ld/%ld\n", strlen(data), filesize);
-
 				// Get next frame
 				bzero(buffer,sizeof(buffer));
-				nbytes = recvfrom(sock, buffer, MAXBUFSIZE-1, 0, (struct sockaddr*)&remote, &remote_length);
-				
+				nbytes = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&remote, &remote_length);
+				if (nbytes < 0) {
+					printf("Error sending ACK: errno=%d\n", errno);
+				}
+
 				if ( strncmp(request, buffer, 4) == 0 ) {
 					// Resend original ACK if necessary
-					printf("resending ack put\n");
 					nbytes = sendto(sock, commandresponse, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
 				}
 				else {
 					// Get the sequence number from the buffer
 					bzero(seqstring, sizeof(seqstring));
-					snprintf(seqstring, 8, "%8s", buffer);
-					printf("seqstring:%s\n", seqstring);
+					strncpy(seqstring, buffer, sizeof(seqstring));
 					seq = strtol(seqstring+4, NULL, 10);
-					printf("rcvd seqstring: %s\nparsed seq:%ld\n", seqstring, seq);
-
+					
 					// Write data from frame to memory
 					strcpy(data + seq * framesize, buffer + 8);
 					
 					// Write the ACK and send
 					bzero(seqstring, sizeof(seqstring));
 					sprintf(seqstring, "ACK %4ld", seq);
-					printf("acked: %s::\nseq: %ld::\n", seqstring, seq);
 					nbytes = sendto(sock, seqstring, sizeof(seqstring), 0, (struct sockaddr*)&remote, sizeof(remote));
 					if (nbytes < 0) {
 						printf("Error sending ACK: errno=%d\n", errno);
@@ -277,14 +266,12 @@ int main (int argc, char * argv[]) {
 
 		
 		// send response to client
-		printf("writing response: %d\n%s\n", response_len, response);
-
+		
 		// start response and send filesize
 		bzero(frame, sizeof(frame));
 		sprintf(frame, "START %d", response_len);
 		response_received = 0;
 		while (response_received == 0) {
-			printf("sending start: %s\n", frame);
 			nbytes = sendto( sock, frame, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
 
 			bzero(buffer,sizeof(buffer));
@@ -297,16 +284,14 @@ int main (int argc, char * argv[]) {
 			else if( strcmp(buffer, request) == 0 ) {
 				nbytes = sendto(sock, commandresponse, sizeof(commandresponse), 0, (struct sockaddr*)&remote, sizeof(remote));
 			}
-			printf("received response waiting for \"ACK START\": %s\n", buffer);
 		}
 
 		// send response string
 		if ( response_len > 0 ) {
-			printf("filesize: %d\n", response_len);
 			seq = 0;
 			char *i = response;
 			char *const end = i + response_len;
-			printf("start: %p end: %p\n", i,end );
+			
 			// break the file into frames and send
 			for(; i < end; i += framesize) {
 				bzero(seqstring,sizeof(seqstring));
@@ -323,7 +308,6 @@ int main (int argc, char * argv[]) {
 				// send the frame and wait for ACK
 				response_received = 0;
 				while (response_received == 0) {
-					printf("sending frame: %s\n", frame);
 					nbytes = sendto( sock, frame, MAXBUFSIZE, 0, (struct sockaddr*)&remote, sizeof(remote));
 
 					bzero(buffer,sizeof(buffer));
@@ -333,7 +317,6 @@ int main (int argc, char * argv[]) {
 					if ( strncmp(buffer, ackstring, 8) == 0 ) {
 						response_received = 1;
 					}
-					printf("waiting for %s, received: %s\n", ackstring, buffer);
 				}
 
 				// seq must not be more than 4 characters
@@ -345,6 +328,5 @@ int main (int argc, char * argv[]) {
 				}
 			}
 		}
-
 	}
 }
