@@ -130,18 +130,15 @@ void *connection_handler(void *socket_desc)
 {
   //Get the socket descriptor
   int sock = *(int*)socket_desc;
-  int read_size;
+  size_t read_size;
   std::string message;
   const int MSG_SIZE = 2000;
   char client_message[MSG_SIZE];
-  char buffer[MSG_SIZE];
   Request request;
-  std::string path;
-  int bytes_read;
-  int total_bytes;
-  std:: string response;
+  
 
   //Receive a message from client
+  bzero(client_message);
   read_size = recv(sock, client_message, MSG_SIZE, 0);
   request = parseRequest( client_message, strlen(client_message) );
 
@@ -151,52 +148,53 @@ void *connection_handler(void *socket_desc)
   }
   else {
     // Get the absolute path and open it
-    path = "";
+    std::string path = "";
     path.append( config.docroot );
     path.append( request.uri );
     printf("request for path:%s\n", path.c_str() );
     FILE *fp;
-    fp = fopen(path.c_str(), "r");
+    fp = fopen( path.c_str(), "rb" );
     
-    total_bytes = 0;
-    bytes_read = 0;
-    message = "";
-    while ( bytes_read >= 0 ) {
-        bytes_read = read(fp, buffer, sizeof(buffer));
-        if (bytes_read == 0) // We're done reading from the file
-            break;
-        total_bytes += bytes_read;
-        message.append( buffer );
-    }
+    if ( fp != NULL ) {
+      char buffer[MSG_SIZE];
+      size_t filesize;
+      std::string line;
+      int file_read_size, num;
 
-    fclose(fp);
+      fseek(fp, 0, SEEK_END);
+      filesize = ftell(fp);
+      rewind(fp);
 
-    if ( total_bytes > 0 ) {
-      response = "";
-      response.append( request.version );
-      response.append( " 200 OK\nContent-Type: " );
-      response.append( request.filetype );
-      response.append( "\nContent-Length: " );
-      response.append( std::to_string( total_bytes ) );
-      response.append( "\nConnection: close\n\n" )
-      message.insert( 0, response );
+      // Write and send headers
+      line = "";
+      line.append( request.version );
+      line.append( " 200 OK\nContent-Type: " );
+      line.append( request.filetype );
+      line.append( "\nContent-Length: " );
+      line.append( std::to_string( filesize ) ); 
+      line.append( "\nConnection: close\n\n" );
+      send(sock , line.c_str(), line.length(), 0);
 
-      //send file
-      void *p = message.c_str();
-      while (total_bytes > 0) {
-          int bytes_written = write(sock, p, total_bytes);
-          if (bytes_written <= 0) {
-              perror( "bytes_written < 0??" );
+      // Read file and stream to client
+      while (filesize > 0) {
+          size_t file_read_size = std::min(filesize, sizeof(buffer));
+          file_read_size = fread(buffer, 1, file_read_size, fp);
+
+          unsigned char *pbuf = (unsigned char *) buffer;
+          while (file_read_size > 0) {
+              int num = send(sock, pbuf, file_read_size, 0);
+              pbuf += num;
+              file_read_size -= num;
           }
-          total_bytes -= bytes_written;
-          p += bytes_written;
+
+          filesize -= file_read_size;
       }
     }
     else {
       // Server cannot read the requested file, send 404 message
       message = "";
       message.append( request.version );
-      message.append( "404 Not Found\n\n<html><body>404 Not Found Reason URL does not exist: " );
+      message.append( " 404 Not Found\n\n<html><body>404 Not Found Reason URL does not exist: " );
       message.append( request.uri );
       message.append( "</body></html>" );
       send(sock , message.c_str(), message.length(), 0);
@@ -359,7 +357,7 @@ Request parseRequest( char *requestString, int requestString_len ) {
 
   // get version
   request.version = "";
-  while ( i < requestString_len && !isWhiteSpace( requestString[i] ) && !isCRLF( requestString[i] ) ) {
+  while ( i < requestString_len && !isWhiteSpace( requestString[i] ) && !isCRLF( requestString[i] ) && requestString[i] != 13 ) {
     request.version.append(1u, requestString[i]);
     i++;
   }
@@ -369,12 +367,13 @@ Request parseRequest( char *requestString, int requestString_len ) {
     i++;
   }
 
+  printf("version:%d:\n", request.version.c_str()[8] );
   // read one new line and check version correctness
   if ( i < requestString_len && isCRLF( requestString[i] ) ) {
     i++;
   }
   // else if ( !(i == requestString_len) || request.version.compare( "HTTP/1.0") != 0 || request.version.compare( "HTTP/1.1") != 0) {
-  else if ( !(i == requestString_len) || request.version.compare( "HTTP/1.0" ) != 0 ) {
+  else if (  request.version.compare( "HTTP/1.0" ) != 0 && request.version.compare( "HTTP/1.1" ) != 0 ) {
     request.error = "HTTP/1.0 400 Bad Request\n\n<html><body>400 Bad Request Reason: Invalid Version: ";
     request.error.append( request.version );
     request.error.append( "</body></html>" );
