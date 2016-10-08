@@ -21,8 +21,8 @@
 #include <string>
 #include <unordered_map>
 #include <iostream>
-#include <unistd.h>    //write
-#include <pthread.h> //for threading , link with lpthread
+#include <unistd.h>    
+#include <pthread.h> 
 #include <fstream>
 #include <sstream>
 
@@ -32,6 +32,7 @@ struct Request {
   std::string version;
   std::unordered_map <std::string, std::string> headers;
   std::string data;
+  std::string filetype;
   std::string error;
 };
 
@@ -44,53 +45,9 @@ struct Config {
 };
 
 Config config;
-bool isWhiteSpace( char c ) {
-  return c == ' ' || c == '\t';
-}
 
-bool isCRLF( char c ) {
-  return c == '\n';
-}
-
-// validateRequest
-  // if !(getMethod returns supported value
-  // && getURI has supported filetype
-  // && if getVersion returns supported value)
-    //respond(400)
-  // else
-    //return true
-
-// getMethod
-  // read charaters until first whitespace and store in string
-  // return string and index of whitespace character
-// getURI
-  // read
-// getVersion
-// getHeaders -- returns headers in unordered_map if any exist
-// getData
-
-
-// writeResponse
-  // validateRequest
-  // if invalidRequest
-    // respond(400)
-
-  // parse method
-  // if method not supported  
-
-// handleRequest
-  // validateRequest
-  // getHeaders
-
-  // if request contains http1.1 version and keep-alive header
-    // set starttime = currenttime
-    // loop until currenttime - timeout >= starttime
-      // start new thread or process and writeResponse
-      // receiveMessage
-      
-  // else if not keep-alive
-    // writeResponse
-
+bool isWhiteSpace( char c ) { return c == ' ' || c == '\t';}
+bool isCRLF( char c ) { return c == '\n'; }
 
 // Parses string into object and validates method and version
 Request parseRequest( char *requestString, int requestString_len );
@@ -177,18 +134,75 @@ void *connection_handler(void *socket_desc)
   std::string message;
   const int MSG_SIZE = 2000;
   char client_message[MSG_SIZE];
+  char buffer[MSG_SIZE];
   Request request;
+  std::string path;
+  int bytes_read;
+  int total_bytes;
+  std:: string response;
 
   //Receive a message from client
   read_size = recv(sock, client_message, MSG_SIZE, 0);
-
   request = parseRequest( client_message, strlen(client_message) );
 
-  //Send some messages to the client
-  message = "HTTP/1.1 200 OK\n\n<html><body>Hello World<br/>";
-  //Send the message back to client
-  send(sock , message.c_str(), message.length(), 0);
+  if ( request.error.compare("") != 0 ) {
+    message = request.error;
+    send(sock , message.c_str(), message.length(), 0);
+  }
+  else {
+    // Get the absolute path and open it
+    path = "";
+    path.append( config.docroot );
+    path.append( request.uri );
+    printf("request for path:%s\n", path.c_str() );
+    FILE *fp;
+    fp = fopen(path.c_str(), "r");
+    
+    total_bytes = 0;
+    bytes_read = 0;
+    message = "";
+    while ( bytes_read >= 0 ) {
+        bytes_read = read(fp, buffer, sizeof(buffer));
+        if (bytes_read == 0) // We're done reading from the file
+            break;
+        total_bytes += bytes_read;
+        message.append( buffer );
+    }
 
+    fclose(fp);
+
+    if ( total_bytes > 0 ) {
+      response = "";
+      response.append( request.version );
+      response.append( " 200 OK\nContent-Type: " );
+      response.append( request.filetype );
+      response.append( "\nContent-Length: " );
+      response.append( std::to_string( total_bytes ) );
+      response.append( "\nConnection: close\n\n" )
+      message.insert( 0, response );
+
+      //send file
+      void *p = message.c_str();
+      while (total_bytes > 0) {
+          int bytes_written = write(sock, p, total_bytes);
+          if (bytes_written <= 0) {
+              perror( "bytes_written < 0??" );
+          }
+          total_bytes -= bytes_written;
+          p += bytes_written;
+      }
+    }
+    else {
+      // Server cannot read the requested file, send 404 message
+      message = "";
+      message.append( request.version );
+      message.append( "404 Not Found\n\n<html><body>404 Not Found Reason URL does not exist: " );
+      message.append( request.uri );
+      message.append( "</body></html>" );
+      send(sock , message.c_str(), message.length(), 0);
+    }    
+  }
+  
   close(sock);
    
   if(read_size == -1)
@@ -215,6 +229,11 @@ void getConfig() {
   std::size_t first_whitespace = 0; // Used to parse extension from ContentType
   std::size_t second_whitespace = 0; // Used to parse mime-type from ContentType
 
+  config.port = 0;
+  config.keepalivetime = 0;
+  config.docroot = "";
+  config.index = "";
+
   while (std::getline(infile, line))
   {
       std::istringstream iss(line);
@@ -225,15 +244,19 @@ void getConfig() {
         }
         else if ( line.find( "ListenPort" ) == 0 ) {
           config.port = std::stoi( line.substr( line.rfind(" ") + 1, line.length() - line.rfind(" ") - 1 ) );
+          if ( config.port <= 1024 ) {
+            perror("Invalid port number");
+            exit(1);
+          }
         }
         else if ( line.find( "KeepaliveTime" ) == 0 ) {
-          config.keepalivetime = std::stoi( line.substr( line.rfind(" "), line.length() - line.rfind(" ") ) );
+          config.keepalivetime = std::stoi( line.substr( line.rfind(" ") + 1, line.length() - line.rfind(" ") - 1 ) );
         }
         else if ( line.find( "DocumentRoot" ) == 0 ) {
-          config.docroot = line.substr( line.rfind(" "), line.length() - line.rfind(" ") );
+          config.docroot = line.substr( line.rfind(" ") + 1, line.length() - line.rfind(" ") - 1 );
         }
         else if ( line.find( "DirectoryIndex" ) == 0 ) {
-          config.index = line.substr( line.rfind(" "), line.length() - line.rfind(" ") );
+          config.index = line.substr( line.rfind(" ") + 1, line.length() - line.rfind(" ") -1);
         }
         else if ( line.find( "ContentType" ) == 0 ) {
           first_whitespace = line.find(" ");
@@ -253,6 +276,10 @@ void getConfig() {
       }
   }
   
+  if ( config.port == 0 ) {
+    perror( "Port missing from ws.conf" );
+    exit(1);
+  }
   return;
 }
 
@@ -271,7 +298,7 @@ Request parseRequest( char *requestString, int requestString_len ) {
 
   std::string key;
   std::string value;
-  std::string filetype;
+  std::string fileext;
 
   // get method
   request.method = "";
@@ -282,7 +309,7 @@ Request parseRequest( char *requestString, int requestString_len ) {
 
   // Check for supported methods
   if ( request.method.compare("GET") != 0 && request.method.compare("POST") != 0 ) {
-    request.error = "400 Bad Request\n\n<html><body>400 Bad Request Reason: Invalid Method: ";
+    request.error = "HTTP/1.0 400 Bad Request\n\n<html><body>400 Bad Request Reason: Invalid Method: ";
     request.error.append( request.method );
     request.error.append( "</body></html>" );
     return request;
@@ -300,9 +327,30 @@ Request parseRequest( char *requestString, int requestString_len ) {
     i++;
   }
 
-  // TODO::   check for valid filetype
-  filetype = request.uri.substr( request.uri.rfind("."), request.uri.length() - request.uri.rfind(".") );
+  //Check for directory request
+  fileext = "";
+  try {
+    fileext = request.uri.substr( request.uri.rfind("."), request.uri.length() - request.uri.rfind(".") );
+  }
+  catch (std::out_of_range& exc) { 
+    // No file extension found, assume directory access requested, append / if necessary and append default webpage
+    fileext = ".html";
+    if ( request.uri[ request.uri.length() - 1 ] != '/' ) {
+      request.uri.append("/");
+    }
+    request.uri.append( config.index );
+  }
 
+  // Check filetype
+  try {
+    request.filetype = config.filetypes.at( fileext );
+  }
+  catch (std::out_of_range& exc) {
+    request.error = "HTTP/1.0 501 Not Implemented\n\n<html><body>501 Not Implemented Reason Filetype not supported: ";
+    request.error.append( fileext );
+    request.error.append( "</body></html>" );
+    return request;   
+  }
 
   // move to version
   while( i < requestString_len && isWhiteSpace( requestString[i] ) ) {
@@ -325,8 +373,9 @@ Request parseRequest( char *requestString, int requestString_len ) {
   if ( i < requestString_len && isCRLF( requestString[i] ) ) {
     i++;
   }
-  else if ( !(i == requestString_len) || request.version.compare( "HTTP/1.0") != 0 || request.version.compare( "HTTP/1.1") != 0) {
-    request.error = "400 Bad Request\n\n<html><body>400 Bad Request Reason: Invalid Version: ";
+  // else if ( !(i == requestString_len) || request.version.compare( "HTTP/1.0") != 0 || request.version.compare( "HTTP/1.1") != 0) {
+  else if ( !(i == requestString_len) || request.version.compare( "HTTP/1.0" ) != 0 ) {
+    request.error = "HTTP/1.0 400 Bad Request\n\n<html><body>400 Bad Request Reason: Invalid Version: ";
     request.error.append( request.version );
     request.error.append( "</body></html>" );
     return request;
