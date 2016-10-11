@@ -161,7 +161,7 @@ int main(int argc , char *argv[])
  
 
 void ctrlc_handler(int s){
-  printf("\n\nCReceived kill signal %d\n",s);
+  printf("\n\nReceived kill signal %d\n",s);
   done = true;
 }
 
@@ -190,9 +190,6 @@ void *connection_handler(void *socket_desc)
     thread_count--;
     closeSocket( sock );
     return 0;
-  }
-  else {
-    printf("opened sock: %d\n", sock);
   }
 
   request = parseRequest( client_message, strlen(client_message) );
@@ -257,7 +254,6 @@ void *connection_handler(void *socket_desc)
   }
   
   closeSocket(sock); 
-  printf("sock closed %d\n", sock);
        
   //Free the socket pointer
   free(socket_desc);
