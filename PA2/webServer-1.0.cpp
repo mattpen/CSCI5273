@@ -18,18 +18,13 @@
 #include <sys/time.h>
 #include <stdlib.h>
 #include <memory.h>
-#include <unordered_map> // Used for Request.headers and Config.filtypes
-#include <iostream> 
+#include <string>
+#include <unordered_map>
+#include <iostream>
 #include <unistd.h>    
-#include <pthread.h> // Used to spawn response handlers
-#include <fstream> // Used to retrieve files from the fs
-#include <string> // Used to easily read/write small text buffers
-#include <sstream> // Used to easily read/write small text buffers
-#include <atomic> // Needed to maintain count of threads
-#include <chrono> // Needed for sleep to wait for threads to close after ctrl+c
-#include <thread> // Needed for sleep to wait for threads to close after ctrl+c
-#include <queue>
-
+#include <pthread.h> 
+#include <fstream>
+#include <sstream>
 
 struct Request {
   std::string method;
@@ -50,11 +45,6 @@ struct Config {
 };
 
 Config config;
-int *sockets;
-bool done;
-// std::queue<int> socks;
-// std::atomic<bool> socks_lock;
-std::atomic<int> thread_count;
 
 bool isWhiteSpace( char c ) { return c == ' ' || c == '\t';}
 bool isCRLF( char c ) { return c == '\n'; }
@@ -68,32 +58,12 @@ void getConfig();
 
 //the thread function
 void *connection_handler(void *);
-
-// listen for kill signal, sets done to true after catching signal
-void ctrlc_handler(int s);
-
-// clear socket errors
-int getSO_ERROR(int fd);
-
-// gracefully close sockets
-void closeSocket(int fd);
  
 int main(int argc , char *argv[])
 {
   getConfig();
-  int errno;
 
-  thread_count = 0;
-
-  // Listen for Ctrl + C
-  struct sigaction sigIntHandler;
-  sigIntHandler.sa_handler = ctrlc_handler;
-  sigemptyset(&sigIntHandler.sa_mask);
-  sigIntHandler.sa_flags = 0;
-  sigaction(SIGINT, &sigIntHandler, NULL);
-
-  // Socket values
-  int socket_desc, client_sock , c , *new_sock;
+  int socket_desc , client_sock , c , *new_sock;
   struct sockaddr_in server , client;
    
   //Create socket
@@ -103,11 +73,6 @@ int main(int argc , char *argv[])
     printf("Could not create socket");
   }
   puts("Socket created");
-
-  int enable = 1;
-  if (setsockopt(socket_desc, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
-    perror("setsockopt(SO_REUSEADDR) failed");
-  }
    
   //Prepare the sockaddr_in structure
   server.sin_family = AF_INET;
@@ -128,50 +93,41 @@ int main(int argc , char *argv[])
 
   //Accept and incoming connection
   puts("Waiting for incoming connections...");
-  c = sizeof(struct sockaddr_in);  
+  c = sizeof(struct sockaddr_in);
 
-  while( !done && (client_sock = accept(socket_desc, (struct sockaddr *)&client, (socklen_t*)&c) ) )
+  while( (client_sock = accept(socket_desc, (struct sockaddr *)&client, (socklen_t*)&c)) )
   {
-    if (client_sock < 0) {
-      perror("accept failed");
-      continue;
-    }
-
     puts("Connection accepted");
        
     pthread_t sniffer_thread;
     new_sock = (int *) malloc(1);
     *new_sock = client_sock;
-
-    if( pthread_create( &sniffer_thread , NULL ,  connection_handler , (void*) new_sock) < 0)    {       
+     
+    if( pthread_create( &sniffer_thread , NULL ,  connection_handler , (void*) new_sock) < 0)
+    {       
       perror("could not create thread");
       return 1;
     }
-
+     
+    //Now join the thread , so that we dont terminate before the thread
+    //pthread_join( sniffer_thread , NULL);
     puts("Handler assigned");
   }
-  
-  closeSocket( socket_desc );
-  while( thread_count > 0 ) {
-    printf("waiting for threads to close ...\n");
-    std::this_thread::sleep_for (std::chrono::seconds(1));
+   
+  if (client_sock < 0)
+  {
+    perror("accept failed");
+    return 1;
   }
+   
   return 0;
 }
  
-
-void ctrlc_handler(int s){
-  printf("\n\nCReceived kill signal %d\n",s);
-  done = true;
-}
-
 /*
  * This will handle connection for each client
  * */
 void *connection_handler(void *socket_desc)
 {
-  thread_count++;
-
   //Get the socket descriptor
   int sock = *(int*)socket_desc;
   size_t read_size;
@@ -182,19 +138,8 @@ void *connection_handler(void *socket_desc)
   
 
   //Receive a message from client
-  bzero(client_message, MSG_SIZE);
+  bzero(client_message);
   read_size = recv(sock, client_message, MSG_SIZE, 0);
-
-  if(read_size == -1) {
-    perror("recv failed");
-    thread_count--;
-    closeSocket( sock );
-    return 0;
-  }
-  else {
-    printf("opened sock: %d\n", sock);
-  }
-
   request = parseRequest( client_message, strlen(client_message) );
 
   if ( request.error.compare("") != 0 ) {
@@ -206,6 +151,7 @@ void *connection_handler(void *socket_desc)
     std::string path = "";
     path.append( config.docroot );
     path.append( request.uri );
+    printf("request for path:%s\n", path.c_str() );
     FILE *fp;
     fp = fopen( path.c_str(), "rb" );
     
@@ -231,18 +177,17 @@ void *connection_handler(void *socket_desc)
 
       // Read file and stream to client
       while (filesize > 0) {
-        // Read part of the file
-        size_t file_read_size = std::min(filesize, sizeof(buffer));
-        file_read_size = fread(buffer, 1, file_read_size, fp);
-        filesize -= file_read_size;
+          size_t file_read_size = std::min(filesize, sizeof(buffer));
+          file_read_size = fread(buffer, 1, file_read_size, fp);
 
-        // Send packets until buffer is completely sent
-        unsigned char *pbuf = (unsigned char *) buffer;
-        while (file_read_size > 0) {
-            int num = send(sock, pbuf, file_read_size, 0);
-            pbuf += num;
-            file_read_size -= num;
-        }
+          unsigned char *pbuf = (unsigned char *) buffer;
+          while (file_read_size > 0) {
+              int num = send(sock, pbuf, file_read_size, 0);
+              pbuf += num;
+              file_read_size -= num;
+          }
+
+          filesize -= file_read_size;
       }
     }
     else {
@@ -256,14 +201,19 @@ void *connection_handler(void *socket_desc)
     }    
   }
   
-  closeSocket(sock); 
-  printf("sock closed %d\n", sock);
+  close(sock);
+   
+  if(read_size == -1)
+  {
+    perror("recv failed");
+  }
        
   //Free the socket pointer
   free(socket_desc);
-  thread_count--;
+   
   return 0;
 }
+
 
 
 /**
@@ -304,7 +254,7 @@ void getConfig() {
           config.docroot = line.substr( line.rfind(" ") + 1, line.length() - line.rfind(" ") - 1 );
         }
         else if ( line.find( "DirectoryIndex" ) == 0 ) {
-          config.index.append( line.substr( line.rfind(" ") + 1, line.length() - line.rfind(" ") - 1) );
+          config.index = line.substr( line.rfind(" ") + 1, line.length() - line.rfind(" ") -1);
         }
         else if ( line.find( "ContentType" ) == 0 ) {
           first_whitespace = line.find(" ");
@@ -417,6 +367,7 @@ Request parseRequest( char *requestString, int requestString_len ) {
     i++;
   }
 
+  printf("version:%d:\n", request.version.c_str()[8] );
   // read one new line and check version correctness
   if ( i < requestString_len && isCRLF( requestString[i] ) ) {
     i++;
@@ -471,25 +422,4 @@ Request parseRequest( char *requestString, int requestString_len ) {
   }
 
   return request;
-}
-
-int getSO_ERROR(int fd) {
-   int err = 1;
-   socklen_t len = sizeof err;
-   if (-1 == getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&err, &len))
-      perror("getSO_ERROR");
-   if (err)
-      errno = err;              // set errno to the socket SO_ERROR
-   return err;
-}
-
-void closeSocket(int fd) {      // *not* the Windows closesocket()
-   if (fd >= 0) {
-      getSO_ERROR(fd); // first clear any errors, which can cause close to fail
-      if (shutdown(fd, SHUT_RDWR) < 0) // secondly, terminate the 'reliable' delivery
-         if (errno != ENOTCONN && errno != EINVAL) // SGI causes EINVAL
-            perror("shutdown");
-      if (close(fd) < 0) // finally call close()
-         perror("close");
-   }
 }
