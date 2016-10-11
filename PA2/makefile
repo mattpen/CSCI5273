@@ -1,3 +1,3 @@
 all:
-	g++ webServer.cpp -o webServer -std=c++11 -pthread
+	g++ webServer.cpp -g -O0 -o webServer -std=c++11 -pthread
 
