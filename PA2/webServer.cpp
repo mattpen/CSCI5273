@@ -144,10 +144,10 @@ int main(int argc , char *argv[])
   
 
   printf("Closing threads...\n");
-  int ret;
+  int ret, sock_fd;
   while ( !socks.empty() ) {
     printf( "Threads remaining: %ld\n", socks.size() );
-    int sock_fd = socks.back();
+    sock_fd = socks.back();
     ret = close( sock_fd );
     if ( ret != 0 ) {
       printf("Close errno: %d, sock_fd:%d\n", errno, sock_fd);
@@ -155,7 +155,10 @@ int main(int argc , char *argv[])
     socks.pop();    
   }
   
-  close( socket_desc );
+  ret = close( socket_desc );
+  if ( ret != 0 ) {
+    printf("Close errno: %d, sock_fd:%d\n", errno, sock_fd);
+  }
   return 0;
 }
  
