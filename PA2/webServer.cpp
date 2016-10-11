@@ -75,6 +75,8 @@ int main(int argc , char *argv[])
   getConfig();
   thread_count = 0;
 
+  int errno;
+
   // Listen for Ctrl + C
   struct sigaction sigIntHandler;
   sigIntHandler.sa_handler = ctrlc_handler;
@@ -142,11 +144,17 @@ int main(int argc , char *argv[])
   
 
   printf("Closing threads...\n");
+  int ret;
   while ( !socks.empty() ) {
     printf( "Threads remaining: %ld\n", socks.size() );
-    close( socks.back() );
+    int sock_fd = socks.back();
+    ret = close( sock_fd );
+    if ( ret != 0 ) {
+      printf("Close errno: %d, sock_fd:%d\n", errno, sock_fd);
+    }
     socks.pop();    
   }
+  
   close( socket_desc );
   return 0;
 }
