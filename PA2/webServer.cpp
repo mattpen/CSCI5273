@@ -224,11 +224,14 @@ void *connection_handler(void *socket_desc)
         size_t file_read_size = std::min(filesize, sizeof(buffer));
         file_read_size = fread(buffer, 1, file_read_size, fp);
         filesize -= file_read_size;
+	printf( "reading line: %s\n", buffer );
 
         // Send packets until buffer is completely sent
         unsigned char *pbuf = (unsigned char *) buffer;
         while (file_read_size > 0) {
             int num = send(sock, pbuf, file_read_size, 0);
+
+	    printf( "wrote line:%.*s:\nfile_read_size:%ld\n", num, pbuf, file_read_size ); 
             pbuf += num;
             file_read_size -= num;
         }
