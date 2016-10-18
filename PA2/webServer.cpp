@@ -5,30 +5,15 @@
   *
   **/
 
-#include <sys/types.h>
-#include <sys/socket.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
 #include <unistd.h>
 #include <signal.h>
-#include <stdio.h>
-#include <fcntl.h>
-#include <errno.h>
-#include <sys/time.h>
-#include <stdlib.h>
 #include <memory.h>
 #include <unordered_map> // Used for Request.headers and Config.filtypes
-#include <iostream> 
-#include <unistd.h>    
-#include <pthread.h> // Used to spawn response handlers
 #include <fstream> // Used to retrieve files from the fs
-#include <string> // Used to easily read/write small text buffers
 #include <sstream> // Used to easily read/write small text buffers
 #include <atomic> // Needed to maintain count of threads
-#include <chrono> // Needed for sleep to wait for threads to close after ctrl+c
 #include <thread> // Needed for sleep to wait for threads to close after ctrl+c
-#include <queue>
 
 
 struct Request {
@@ -39,6 +24,7 @@ struct Request {
   std::string data;
   std::string filetype;
   std::string error;
+  Request* next;
 };
 
 struct Config {
@@ -51,17 +37,18 @@ struct Config {
 
 Config config;
 bool done;
-// std::queue<int> socks;
-// std::atomic<bool> socks_lock;
 std::atomic<int> thread_count;
 
-bool isWhiteSpace( char c ) { return c == ' ' || c == '\t';}
-bool isCRLF( char *buf, int i ) { 
-  return buf[i] == '\n' || (buf[i] == 13 && buf[i+1] == 10);
-}
+// Returns true for spaces and tabs
+bool isWhiteSpace( char c ) { return c == ' ' || c == '\t'; }
+
+// Returns true for newline and carriage-return-line-feed
+bool isCRLF( char *buf, int i ) { return buf[i] == '\n' || (buf[i] == 13 && buf[i+1] == 10); }
+
+bool isKeepAlive( std::string connectionString );
 
 // Parses string into object and validates method and version
-Request parseRequest( char *requestString, int requestString_len );
+Request* parseRequest( char *requestString, int requestString_len );
 
 // Reads ./ws.conf and parses out the parameters for configuration.
 // Initializes the global config object
@@ -140,7 +127,7 @@ int main(int argc , char *argv[])
     }
        
     pthread_t sniffer_thread;
-    new_sock = (int *) malloc(1);
+    new_sock = (int *) malloc(4);
     *new_sock = client_sock;
 
     if( pthread_create( &sniffer_thread , NULL ,  connection_handler , (void*) new_sock) < 0)    {       
@@ -172,139 +159,194 @@ void *connection_handler(void *socket_desc)
 
   //Get the socket descriptor
   int sock = *(int*)socket_desc;
+
+  struct timeval timeout;      
+  timeout.tv_sec = config.keepalivetime;
+  timeout.tv_usec = 0;
+
+  if (setsockopt (sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0) {
+    perror("setsockopt failed\n");
+  }
+
+  if (setsockopt (sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout)) < 0) {
+    perror("setsockopt failed\n");
+  }
+
   size_t read_size;
   std::string message;
   const int MSG_SIZE = 2000;
   char client_message[MSG_SIZE];
-  Request request;
-  
+  Request *requestptr = new Request;
+  requestptr->next = NULL;
+  bool keepalive = true;  
 
   //Receive a message from client
-  bzero(client_message, MSG_SIZE);
-  read_size = recv(sock, client_message, MSG_SIZE, 0);
+  while ( keepalive ) {
+    if ( requestptr->next == NULL ) {
+      bzero(client_message, MSG_SIZE);
+      read_size = recv(sock, client_message, MSG_SIZE, 0 );
+      if(read_size == -1) {
+        perror("recv failed");
+        thread_count--;
+        closeSocket( sock );
+        return 0;
+      }
+      requestptr = parseRequest( client_message, strlen(client_message) ); 
+    }
+    else {
+      // Read/Write pipelined requests before listening again
+      requestptr = requestptr->next;
+    }
 
-  if(read_size == -1) {
-    perror("recv failed");
-    thread_count--;
-    closeSocket( sock );
-    return 0;
-  }
+    // Check for keep-alive header
+    keepalive = isKeepAlive( requestptr->headers[ "Connection" ] );
 
-  request = parseRequest( client_message, strlen(client_message) );
-  printf("%s\t%s\t%s\n", request.method.c_str(), request.uri.c_str(), request.version.c_str());
+    // Log request to stdout
+    printf("%s\t%s\t%s\n", requestptr->method.c_str(), requestptr->uri.c_str(), requestptr->version.c_str());
 
-  if ( request.error.compare("") != 0 ) {
-    message = request.error;
-    send(sock , message.c_str(), message.length(), 0);
-  }
-  else {
-    // Get the absolute path and open it
-    std::string path = "";
-    path.append( config.docroot );
-    path.append( request.uri );
-    FILE *fp;
-    fp = fopen( path.c_str(), "rb" );
-    
-    if ( fp != NULL ) {
-      char buffer[MSG_SIZE];
-      size_t filesize;
-      std::string response;
-      int file_read_size, num;
-
-      fseek(fp, 0, SEEK_END);
-      filesize = ftell(fp);
-      rewind(fp);
-
-      // Write and send headers
-      response = "";
-      response.append( request.version );
-      response.append( " 200 OK\nContent-Type: " );
-      response.append( request.filetype ); 
-      response.append( "\nConnection: close\n" );
+    if ( requestptr->error.compare("") != 0 ) {
+      message = requestptr->error;
+      int bytes = send(sock , message.c_str(), message.length(), 0);
+      if ( bytes < 0 ) {
+        perror("Error sending error message");
+      }
+    }
+    else {
+      // Get the absolute path and open it
+      std::string path = "";
+      path.append( config.docroot );
+      path.append( requestptr->uri );
+      FILE *fp;
+      fp = fopen( path.c_str(), "rb" );
       
+      if ( fp != NULL ) {
+        char buffer[MSG_SIZE];
+        size_t filesize;
+        std::string response;
+        int file_read_size, num;
 
-      if ( request.method.compare("POST") == 0 ) {
-        if ( request.filetype.compare("text/html") == 0 ) {
-          request.data.insert( 0, "<h1>Post Data</h1>\n<pre>" );
-          request.data.append( "</pre>\n\n" );
+        fseek(fp, 0, SEEK_END);
+        filesize = ftell(fp);
+        rewind(fp);
 
-          response.append( "\nContent-Length: " );
-          response.append( std::to_string( filesize + request.data.length() * sizeof(char) ) );
-          response.append( "\n\n" );
-          send(sock , response.c_str(), response.length(), 0);
+        // Write and send headers
+        response = "";
+        response.append( requestptr->version );
+        response.append( " 200 OK\nContent-Type: " );
+        response.append( requestptr->filetype ); 
+        if ( keepalive ) {
+          response.append( "\nConnection: keep-alive\n" );
+        }
+        else {
+          response.append( "\nConnection: close\n" );
+        }
 
-          // Read file and stream to client
-          std::string finalline;
-          while (filesize > 0) {
-            // Read part of the file
-            int file_read_size = std::min(filesize, sizeof(buffer));
-            bzero( buffer, sizeof(buffer) );
-            file_read_size = fread(buffer, 1, file_read_size, fp);
-            filesize -= file_read_size;
+        if ( requestptr->method.compare("POST") == 0 ) {
+          if ( requestptr->filetype.compare("text/html") == 0 ) {
+            requestptr->data.insert( 0, "<h1>Post Data</h1>\n<pre>" );
+            requestptr->data.append( "</pre>\n\n" );
 
-            // Look for end of html file and insert the POST data
-            finalline = buffer;
-            int pos = finalline.find( "</body>" );
-            unsigned char *pbuf;
-            if ( pos != std::string::npos ) {
-              finalline.insert( pos, request.data );
-              pbuf = (unsigned char *) finalline.c_str();
-              file_read_size = finalline.length();
+            response.append( "\nContent-Length: " );
+            response.append( std::to_string( filesize + requestptr->data.length() * sizeof(char) ) );
+            response.append( "\n\n" );
+            int bytes = send(sock , response.c_str(), response.length(), 0);
+            if ( bytes < 0 ) {
+              perror( "Error sending post headers" );
             }
-            else {
-              pbuf = (unsigned char *) buffer;
-            }
 
-            // Send packets until buffer is completely sent
-            while (file_read_size > 0) {
+            // Read file and stream to client
+            std::string finalline;
+            while (filesize > 0) {
+              // Read part of the file
+              int file_read_size = std::min(filesize, sizeof(buffer));
+              bzero( buffer, sizeof(buffer) );
+              file_read_size = fread(buffer, 1, file_read_size, fp);
+              filesize -= file_read_size;
+
+              // Look for end of html file and insert the POST data
+              finalline = buffer;
+              int pos = finalline.find( "</body>" );
+              unsigned char *pbuf;
+              if ( pos != std::string::npos ) {
+                finalline.insert( pos, requestptr->data );
+                pbuf = (unsigned char *) finalline.c_str();
+                file_read_size = finalline.length();
+              }
+              else {
+                pbuf = (unsigned char *) buffer;
+              }
+
+              // Send packets until buffer is completely sent
+              while (file_read_size > 0) {
                 int num = send(sock, pbuf, file_read_size, 0);
+                if ( num < 0 ) {
+                  perror( "Error sending post body" );
+                }
                 pbuf += num;
                 file_read_size -= num;
+              }
+            }
+            fclose( fp );
+          }
+          else {
+            // Got a POST request for a binary file
+            printf("405 for post filetype:%s\n", requestptr->filetype.c_str());
+            message = "HTTP/1.0 405 Method Not Allowed\n\n<html><body>405 Method Not Allowed Reason: Invalid Method: ";
+            message.append( requestptr->method );
+            message.append( " for non-html filetype</body></html>" );
+            int bytes = send(sock , message.c_str(), message.length(), 0);
+            if ( bytes < 0 ) {
+              perror( "Error sending post error message" );
             }
           }
         }
         else {
-          printf("405 for post filetype:%s\n", request.filetype.c_str());
-          message = "HTTP/1.0 405 Method Not Allowed\n\n<html><body>405 Method Not Allowed Reason: Invalid Method: ";
-          message.append( request.method );
-          message.append( " for non-html filetype</body></html>" );
-          send(sock , message.c_str(), message.length(), 0);
+          response.append( "Content-Length: " );
+          response.append( std::to_string( filesize ) );
+          response.append( "\n\n" );
+          int bytes = send(sock , response.c_str(), response.length(), 0);
+          if ( bytes < 0 ) {
+            perror( "Error sending get headers" );
+          }
+          // Read file and stream to client
+          while (filesize > 0) {
+            // Read part of the file
+            size_t file_read_size = std::min(filesize, sizeof(buffer));
+            file_read_size = fread(buffer, 1, file_read_size, fp);
+            filesize -= file_read_size;
+
+            // Send packets until buffer is completely sent
+            unsigned char *pbuf = (unsigned char *) buffer;
+            while (file_read_size > 0) {
+              int num = send(sock, pbuf, file_read_size, 0);
+              if ( num < 0 ) {
+                perror( "Error sending get body" );
+              }
+              pbuf += num;
+              file_read_size -= num;
+            }
+          }
+          fclose( fp );
         }
       }
       else {
-        response.append( "Content-Length: " );
-        response.append( std::to_string( filesize ) );
-        response.append( "\n\n" );
-        send(sock , response.c_str(), response.length(), 0);
-
-        // Read file and stream to client
-        while (filesize > 0) {
-          // Read part of the file
-          size_t file_read_size = std::min(filesize, sizeof(buffer));
-          file_read_size = fread(buffer, 1, file_read_size, fp);
-          filesize -= file_read_size;
-
-          // Send packets until buffer is completely sent
-          unsigned char *pbuf = (unsigned char *) buffer;
-          while (file_read_size > 0) {
-              int num = send(sock, pbuf, file_read_size, 0);
-              pbuf += num;
-              file_read_size -= num;
-          }
+        // Server cannot read the requested file, send 404 message
+        message = "";
+        message.append( requestptr->version );
+        message.append( " 404 Not Found\n\n<html><body>404 Not Found Reason URL does not exist: " );
+        message.append( requestptr->uri );
+        message.append( "</body></html>" );
+        int bytes = send(sock , message.c_str(), message.length(), 0);
+        if ( bytes < 0 ) {
+          perror( "Error sending 404" );
         }
-      }
+      }    
     }
-    else {
-      // Server cannot read the requested file, send 404 message
-      message = "";
-      message.append( request.version );
-      message.append( " 404 Not Found\n\n<html><body>404 Not Found Reason URL does not exist: " );
-      message.append( request.uri );
-      message.append( "</body></html>" );
-      send(sock , message.c_str(), message.length(), 0);
-    }    
   }
-  
+
+  if(read_size == -1) {
+    perror("recv failed");
+  }
   closeSocket(sock); 
        
   //Free the socket pointer
@@ -387,27 +429,28 @@ void getConfig() {
   * @param requestString_len - length of requestString
   * @returns Request
   **/
-Request parseRequest( char *requestString, int requestString_len ) {
-  Request request; // return value
+Request* parseRequest( char *requestString, int requestString_len ) {
+  Request *request = new Request; // return value
   int i = 0; //index in requestString
-  request.error = "";
+  request->error = "";
+  request->next = NULL;
 
   std::string key;
   std::string value;
   std::string fileext;
 
   // get method
-  request.method = "";
+  request->method = "";
   while ( i < requestString_len && !isWhiteSpace( requestString[i] ) && !isCRLF( requestString, i ) ) {
-    request.method.append(1u, requestString[i]);
+    request->method.append(1u, requestString[i]);
     i++;
   }
 
   // Check for supported methods
-  if ( request.method.compare("GET") != 0 && request.method.compare("POST") != 0 ) {
-    request.error = "HTTP/1.0 400 Bad Request\n\n<html><body>400 Bad Request Reason: Invalid Method: ";
-    request.error.append( request.method );
-    request.error.append( "</body></html>" );
+  if ( request->method.compare("GET") != 0 && request->method.compare("POST") != 0 ) {
+    request->error = "HTTP/1.0 400 Bad Request\n\n<html><body>400 Bad Request Reason: Invalid Method: ";
+    request->error.append( request->method );
+    request->error.append( "</body></html>" );
     return request;
   }
 
@@ -417,34 +460,34 @@ Request parseRequest( char *requestString, int requestString_len ) {
   }
 
   // get uri
-  request.uri = "";
+  request->uri = "";
   while ( i < requestString_len && !isWhiteSpace( requestString[i] ) && !isCRLF( requestString, i ) ) {
-    request.uri.append(1u, requestString[i]);
+    request->uri.append(1u, requestString[i]);
     i++;
   }
 
   //Check for directory request
   fileext = "";
   try {
-    fileext = request.uri.substr( request.uri.rfind("."), request.uri.length() - request.uri.rfind(".") );
+    fileext = request->uri.substr( request->uri.rfind("."), request->uri.length() - request->uri.rfind(".") );
   }
   catch (std::out_of_range& exc) { 
     // No file extension found, assume directory access requested, append / if necessary and append default webpage
     fileext = ".html";
-    if ( request.uri[ request.uri.length() - 1 ] != '/' ) {
-      request.uri.append("/");
+    if ( request->uri[ request->uri.length() - 1 ] != '/' ) {
+      request->uri.append("/");
     }
-    request.uri.append( config.index );
+    request->uri.append( config.index );
   }
 
   // Check filetype
   try {
-    request.filetype = config.filetypes.at( fileext );
+    request->filetype = config.filetypes.at( fileext );
   }
   catch (std::out_of_range& exc) {
-    request.error = "HTTP/1.0 501 Not Implemented\n\n<html><body>501 Not Implemented Reason Filetype not supported: ";
-    request.error.append( fileext );
-    request.error.append( "</body></html>" );
+    request->error = "HTTP/1.0 501 Not Implemented\n\n<html><body>501 Not Implemented Reason Filetype not supported: ";
+    request->error.append( fileext );
+    request->error.append( "</body></html>" );
     return request;   
   }
 
@@ -454,9 +497,9 @@ Request parseRequest( char *requestString, int requestString_len ) {
   }
 
   // get version
-  request.version = "";
+  request->version = "";
   while ( i < requestString_len && !isWhiteSpace( requestString[i] ) && !isCRLF( requestString, i ) && requestString[i] != 13 ) {
-    request.version.append(1u, requestString[i]);
+    request->version.append(1u, requestString[i]);
     i++;
   }
 
@@ -474,14 +517,14 @@ Request parseRequest( char *requestString, int requestString_len ) {
       i += 2;
     }
     else {
-      request.error = "HTTP/1.0 400 Bad Request\n\n<html><body>400 Bad Request Reason: Malformed Request</body></html>";
+      request->error = "HTTP/1.0 400 Bad Request\n\n<html><body>400 Bad Request Reason: Malformed Request</body></html>";
       return request;
     }
   }
-  else if (  request.version.compare( "HTTP/1.0" ) != 0 && request.version.compare( "HTTP/1.1" ) != 0 ) {
-    request.error = "HTTP/1.0 400 Bad Request\n\n<html><body>400 Bad Request Reason: Invalid Version: ";
-    request.error.append( request.version );
-    request.error.append( "</body></html>" );
+  else if (  request->version.compare( "HTTP/1.0" ) != 0 && request->version.compare( "HTTP/1.1" ) != 0 ) {
+    request->error = "HTTP/1.0 400 Bad Request\n\n<html><body>400 Bad Request Reason: Invalid Version: ";
+    request->error.append( request->version );
+    request->error.append( "</body></html>" );
     return request;
   }
 
@@ -507,7 +550,9 @@ Request parseRequest( char *requestString, int requestString_len ) {
     }
 
     // Add key:value to headers map
-    request.headers[key] = value;
+    request->headers[ key.substr(0,key.length()-1) ] = value;
+
+    // printf("key:value = {%s:%s}\n", key.substr(0,key.length()-1).c_str(), value.c_str());
 
     // Read the CRLF
     if ( i < requestString_len && isCRLF( requestString, i ) ) {
@@ -518,7 +563,7 @@ Request parseRequest( char *requestString, int requestString_len ) {
         i += 2;
       }
       else {
-        request.error = "HTTP/1.0 400 Bad Request\n\n<html><body>400 Bad Request Reason: Malformed Request</body></html>";
+        request->error = "HTTP/1.0 400 Bad Request\n\n<html><body>400 Bad Request Reason: Malformed Request</body></html>";
         return request;
       }
     }
@@ -533,16 +578,22 @@ Request parseRequest( char *requestString, int requestString_len ) {
       i += 2;
     }
     else {
-      request.error = "HTTP/1.0 400 Bad Request\n\n<html><body>400 Bad Request Reason: Malformed Request</body></html>";
+      request->error = "HTTP/1.0 400 Bad Request\n\n<html><body>400 Bad Request Reason: Malformed Request</body></html>";
       return request;
     }
   } 
 
-  // get data
-  request.data = "";
-  while ( i < requestString_len ) {
-    request.data.append(1u, requestString[i]);
-    i++;
+  // get POST data
+  if ( request->method.compare( "POST" ) == 0 ) {
+    request->data = "";
+    while ( i < requestString_len ) {
+      request->data.append(1u, requestString[i]);
+      i++;
+    }
+  }
+  // get pipelined request
+  else if ( request->method.compare( "GET" ) == 0 && request->version.compare( "HTTP/1.1" ) == 0 && isKeepAlive( request->headers[ "Connection" ] ) && strncmp( requestString + i, "GET", 3 ) == 0 ) {
+    request->next = parseRequest( requestString + i, requestString_len - i );
   }
 
   return request;
@@ -569,4 +620,14 @@ void closeSocket(int fd) {
       if (close(fd) < 0) // finally call close()
          perror("close");
    }
+}
+
+//  There are apparently a lot of ways to spell keep-alive in common use, so lets check them all.
+bool isKeepAlive( std::string connectionString ) {
+  return connectionString.compare( "keepalive" ) == 0
+      || connectionString.compare( "Keepalive" ) == 0
+      || connectionString.compare( "KeepAlive" ) == 0
+      || connectionString.compare( "keep-alive" ) == 0
+      || connectionString.compare( "Keep-alive" ) == 0
+      || connectionString.compare( "Keep-Alive" ) == 0;
 }
