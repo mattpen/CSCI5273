@@ -508,7 +508,7 @@ Request* parseRequest( char *requestString, int requestString_len ) {
     i++;
   }
 
-  // read one new line and check version correctness
+  // read one new line, if next character is not a newline, then this request is invalid
   if ( i < requestString_len && isCRLF( requestString, i ) ) {
     if ( requestString[i] == '\n' ){
       i++;
@@ -521,7 +521,10 @@ Request* parseRequest( char *requestString, int requestString_len ) {
       return request;
     }
   }
-  else if (  request->version.compare( "HTTP/1.0" ) != 0 && request->version.compare( "HTTP/1.1" ) != 0 ) {
+
+  printf("request.version: {%s}\n", request->version.c_str());
+  
+  if ( request->version.compare( "HTTP/1.0" ) != 0 && request->version.compare( "HTTP/1.1" ) != 0 ) {
     request->error = "HTTP/1.0 400 Bad Request\n\n<html><body>400 Bad Request Reason: Invalid Version: ";
     request->error.append( request->version );
     request->error.append( "</body></html>" );
