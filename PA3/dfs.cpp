@@ -11,14 +11,24 @@
 #include <unistd.h>
 //#include <signal.h>
 #include <memory.h>
-//#include <unordered_map> // Used for Request.headers and Config.filtypes
+#include <unordered_map> // Used for Request.headers and Config.filtypes
 #include <fstream> // Used to retrieve files from the fs
 #include <sstream> // Used to easily read/write small text buffers
 #include <atomic> // Needed to maintain count of threads
 #include <thread> // Needed for sleep to wait for threads to close after ctrl+c
 
+struct Request {
+    std::string username;
+    std::string password;
+    bool isPrimaryRequest;
+    std::string directory;
+    std::string filename;
+    std::string data;
+};
+
+std::unordered_map< std::string, std::string > userPasswordMap;
 std::atomic< int > thread_count;
-std::string name;
+std::string directory;
 #define MSG_SIZE 2000
 
 // clear socket errors
@@ -28,7 +38,7 @@ int getSO_ERROR( int fd );
 void closeSocket( int fd );
 
 //the thread function
-void *connection_handler( void * );
+void *requestCycle( void * );
 
 // Read request into string from socket
 std::string getRequest( int sock );
@@ -36,12 +46,20 @@ std::string getRequest( int sock );
 // Write response string to socket
 void sendResponse( int sock, std::string response );
 
+bool requestAuthorized( std::string request );
+
+std::string handleListResponse( std::string request );
+
+std::string handleGetResponse( std::string request );
+
+std::string handlePutResponse( std::string request );
+
 int main( int argc, char *argv[] ) {
   if ( argc < 3 ) {
     printf( "USAGE: <root_directory> <server_port>\n" );
     exit( 1 );
   }
-  name = argv[ 1 ];
+  directory = argv[ 1 ];
 
   thread_count = 0;
 
@@ -93,7 +111,7 @@ int main( int argc, char *argv[] ) {
     new_sock = ( int * ) malloc( 4 );
     *new_sock = client_sock;
 
-    if ( pthread_create( &sniffer_thread, NULL, connection_handler, ( void * ) new_sock ) < 0 ) {
+    if ( pthread_create( &sniffer_thread, NULL, requestCycle, ( void * ) new_sock ) < 0 ) {
       perror( "could not create thread" );
       return 1;
     }
@@ -150,7 +168,7 @@ void sendResponse( int sock, std::string response ) {
 
 
 //the thread function
-void *connection_handler( void *socket_desc ) {
+void *requestCycle( void *socket_desc ) {
   thread_count++;
 
   //Get the socket descriptor
@@ -162,11 +180,11 @@ void *connection_handler( void *socket_desc ) {
 
   request = getRequest( sock );
 
-  while ( request.find( "EXIT" ) != 0 && requestAuthorized( request ) ) {
-    printf( "Client (%s) Received message: %s\n", name.c_str(), request );
+  if ( requestAuthorized( request ) ) {
+    printf( "Client (%s) Received message: %s\n", directory.c_str(), request.c_str() );
 
     if ( request.find( "LIST" ) == 0 ) {
-      response = handleListResponse();
+      response = handleListResponse( request );
     }
     else if ( request.find( "GET" ) == 0 ) {
       response = handleGetResponse( request );
@@ -176,7 +194,6 @@ void *connection_handler( void *socket_desc ) {
     }
 
     sendResponse( sock, response );
-    request = getRequest( sock )
   }
 
   closeSocket( sock );
@@ -185,6 +202,26 @@ void *connection_handler( void *socket_desc ) {
   thread_count--;
   return 0;
 }
+
+
+bool requestAuthorized( std::string request ) {
+  // TODO: parse un:pw from request
+  // TODO: return ( userPasswordMap has user && userPasswordMap[user] == password )
+}
+
+std::string handleListResponse( std::string request ) {
+  return "";
+  // TODO: get list of files and return it, possibly directory specific?
+}
+
+std::string handleGetResponse( std::string request ) {
+  return "";
+}
+
+std::string handlePutResponse( std::string request ) {
+  return "";
+}
+
 
 // Reused from http://stackoverflow.com/a/12730776/2496827
 int getSO_ERROR( int fd ) {

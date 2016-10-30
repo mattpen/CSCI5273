@@ -19,10 +19,16 @@
 
 #define MSG_SIZE 2000
 
+struct Server {
+    std::string name;
+    std::string ipAddr;
+    int32_t port;
+};
+
 struct Config {
     std::string username;
     std::string password;
-    int serverSockets[4];
+    struct Server servers[4];
 } config;
 
 // Get the configuration file and initialize the global config parameter
@@ -45,6 +51,7 @@ int main( int argc, char *argv[] ) {
 
   char cmd[256];
   std::string command;
+
   while ( fgets( cmd, sizeof( cmd ), stdin ) ) {
     command.assign( cmd );
 
@@ -58,9 +65,6 @@ int main( int argc, char *argv[] ) {
       handlePut( command.substr( 4, command.length() - 4 ) );
     }
     else if ( command.find( "EXIT" ) == 0 ) {
-      for ( int i = 1; i < 4; i++ ) {
-        close( config.serverSockets[ i ] );
-      }
       return 0;
     }
   }
@@ -73,10 +77,11 @@ void initConfig() {
   // Initialize empty config object
   config.username = "";
   config.password = "";
-  config.serverSockets[ 0 ] = -1;
-  config.serverSockets[ 1 ] = -1;
-  config.serverSockets[ 2 ] = -1;
-  config.serverSockets[ 3 ] = -1;
+  for ( int i = 0; i < 4; i++ ) {
+    config.servers[ 0 ].name = "";
+    config.servers[ 0 ].ipAddr = "";
+    config.servers[ 0 ].port = -1;
+  }
 
   while ( std::getline( ifs, line ) ) {
     std::istringstream iss( line );
@@ -87,19 +92,13 @@ void initConfig() {
       }
       else if ( line.find( "Server" ) == 0 ) {
         std::string name = "";
-        std::string address = "";
+        std::string ipAddr = "";
         std::string port = "";
+
         // Parse name, address,  and port
-        printf( "Searching string for server: %s\n", line.c_str() );
-        printf( "Looking for name in between: %ld,%ld\n", line.find( " " ) + 1, line.rfind( " " ) - 7 );
         name = line.substr( line.find( " " ) + 1, line.rfind( " " ) - 7 );
-        printf( "Looking for address in between: %ld,%ld\n", line.rfind( " " ) + 1,
-                line.rfind( ":" ) - line.rfind( " " ) - 1 );
-        address = line.substr( line.rfind( " " ) + 1, line.rfind( ":" ) - line.rfind( " " ) - 1 );
-        printf( "Looking for port in between: %ld,%ld\n", line.rfind( ":" ) + 1,
-                line.length() - line.rfind( ":" ) - 1 );
+        ipAddr = line.substr( line.rfind( " " ) + 1, line.rfind( ":" ) - line.rfind( " " ) - 1 );
         port = line.substr( line.rfind( ":" ) + 1, line.length() - line.rfind( ":" ) - 1 );
-        printf( "Found server:%s:%s:%s:\n", name.c_str(), address.c_str(), port.c_str() );
 
         // Get array index for server
         int socketNum = -1;
@@ -116,29 +115,10 @@ void initConfig() {
           socketNum = 3;
         }
 
-        // init socket
-        struct sockaddr_in server;
+        config.servers[ socketNum ].name = name;
+        config.servers[ socketNum ].ipAddr = ipAddr;
+        config.servers[ socketNum ].port = ( uint16_t ) std::stoi( port );
 
-        config.serverSockets[ socketNum ] = socket( AF_INET, SOCK_STREAM, 0 );
-        if ( config.serverSockets[ socketNum ] == -1 ) {
-          printf( "Could not create socket" );
-        }
-        puts( "Socket created" );
-
-        // Allow client to reuse port/addr if in TIME_WAIT state
-        int enable = 1;
-        if ( setsockopt( config.serverSockets[ socketNum ], SOL_SOCKET, SO_REUSEADDR, &enable, sizeof( int ) ) < 0 ) {
-          perror( "setsockopt(SO_REUSEADDR) failed" );
-        }
-
-        server.sin_addr.s_addr = inet_addr( address.c_str() );
-        server.sin_family = AF_INET;
-        server.sin_port = htons( ( uint16_t ) std::stoi( port ) );
-
-        if ( connect( config.serverSockets[ socketNum ], ( struct sockaddr * ) &server, sizeof( server ) ) < 0 ) {
-          perror( "connect failed. Error" );
-          exit( 1 );
-        }
       }
       else if ( line.find( "Username" ) == 0 ) {
         config.username = line.substr( line.rfind( " " ) + 1, line.length() - line.rfind( " " ) - 1 );
@@ -159,33 +139,151 @@ void initConfig() {
 
   if ( ( config.username.compare( "" ) == 0 )
        || ( config.password.compare( "" ) == 0 )
-       || ( config.serverSockets[ 0 ] == -1 )
-       || ( config.serverSockets[ 1 ] == -1 )
-       || ( config.serverSockets[ 2 ] == -1 )
-       || ( config.serverSockets[ 3 ] == -1 ) ) {
-    printf( "Error reading configuration:\n%s\n%s\n", config.username.c_str(), config.password.c_str() );
+       || ( config.servers[ 0 ].name.compare( "" ) == 0
+            || config.servers[ 0 ].ipAddr.compare( "" ) == 0
+            || config.servers[ 0 ].port == -1 )
+       || ( config.servers[ 1 ].name.compare( "" ) == 0
+            || config.servers[ 1 ].ipAddr.compare( "" ) == 0
+            || config.servers[ 1 ].port == -1 )
+       || ( config.servers[ 2 ].name.compare( "" ) == 0
+            || config.servers[ 2 ].ipAddr.compare( "" ) == 0
+            || config.servers[ 2 ].port == -1 )
+       || ( config.servers[ 3 ].name.compare( "" ) == 0
+            || config.servers[ 3 ].ipAddr.compare( "" ) == 0
+            || config.servers[ 3 ].port == -1 ) ) {
+    printf( "Error reading configuration.\n" );
     exit( 1 );
   }
 }
 
+int connectToServer( int i ) {
+  // init socket
+  struct sockaddr_in server;
+  int newSock;
+
+  newSock = socket( AF_INET, SOCK_STREAM, 0 );
+  if ( newSock == -1 ) {
+    char e[MSG_SIZE];
+    sprintf( e, "Sock not created for %d. Error", i );
+    perror( e );
+  }
+  puts( "Socket created" );
+
+  // Allow client to reuse port/addr if in TIME_WAIT state
+  int enable = 1;
+  if ( setsockopt( newSock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof( int ) ) < 0 ) {
+    char e[MSG_SIZE];
+    sprintf( e, "setsockopt(SO_REUSEADDR) failedfor %d. Error", i );
+    perror( e );
+  }
+
+  server.sin_addr.s_addr = inet_addr( config.servers[ i ].ipAddr.c_str() );
+  server.sin_family = AF_INET;
+  server.sin_port = htons( ( uint16_t ) config.servers[ i ].port );
+
+  if ( connect( newSock, ( struct sockaddr * ) &server, sizeof( server ) ) < 0 ) {
+    char e[MSG_SIZE];
+    sprintf( e, "Connect failed for %d. Error", i );
+    perror( e );
+  }
+
+  return newSock;
+}
+
+void sendRequest( std::string request, int sock ) {
+  ssize_t send_size;
+  size_t file_read_size = sizeof( request.c_str() );
+  unsigned char *pbuf = ( unsigned char * ) request.c_str();
+
+  while ( file_read_size > 0 ) {
+    send_size = send( sock, pbuf, file_read_size, 0 );
+    if ( send_size < 0 ) {
+      perror( "Error sending get body" );
+    }
+    pbuf += send_size;
+    file_read_size -= send_size;
+  }
+}
+
+std::string getResponse( int sock ) {
+  char client_message[MSG_SIZE];
+  bzero( client_message, MSG_SIZE );
+  ssize_t read_size;
+  std::string ret = "";
+
+  read_size = recv( sock, client_message, MSG_SIZE, 0 );
+
+  while ( read_size > 0 ) {
+    ret.append( client_message );
+    bzero( client_message, MSG_SIZE );
+    read_size = recv( sock, client_message, MSG_SIZE, 0 );
+  }
+
+  if ( read_size == -1 ) {
+    perror( "recv failed" );
+  }
+
+  return ret;
+}
+
 void handleList() {
   printf( "handling list\n" );
-  char client_message[MSG_SIZE];
+//  char client_message[MSG_SIZE];
+//    write( config.serverSockets[ i ], "LIST", 4 );
+//    bzero( client_message, MSG_SIZE );
+//    read( config.serverSockets[ i ], client_message, MSG_SIZE );
+//    printf( "%s\n", client_message );
+
+  int sock;
+  std::string response;
 
   for ( int i = 0; i < 4; i++ ) {
-    write( config.serverSockets[ i ], "LIST", 4 );
-    bzero( client_message, MSG_SIZE );
-    read( config.serverSockets[ i ], client_message, MSG_SIZE );
-    printf( "%s\n", client_message );
+    sock = connectToServer( i );
+    if ( sock != -1 ) {
+      sendRequest( "LIST", sock );
+      response = getResponse( sock );
+      printf( "%s\n", response.c_str() );
+    }
   }
+  // TODO: reconstruct full list with incomplete warnings
+  closeSocket( sock );
 }
 
 void handleGet( std::string filename ) {
   printf( "handling get\n" );
+
+  int sock;
+  std::string response;
+
+  for ( int i = 0; i < 4; i++ ) {
+    sock = connectToServer( i );
+    if ( sock != -1 ) {
+      // TODO: request should include un:pw, 'p', directory
+      // TODO: resend request with 's' if piece not found,
+      sendRequest( filename, sock );
+      response = getResponse( sock );
+      // TODO: decrypt response
+      // TODO: reconstruct responses
+
+      // TODO: error if pieces missing
+    }
+  }
+  // TODO: write response to ./{$filename}
+
+  closeSocket( sock );
 }
 
 void handlePut( std::string filename ) {
   printf( "handling put\n" );
+
+  int sock;
+  std::string request;
+
+  //TODO: get add filename, un/pw, directory to request
+  //TODO: get the data into memory and hash it
+  //TODO: break the data into 4 pieces, and append it with a p/s to the request
+  //TODO: send the appropriate requests to each server
+  //TODO: encrypt response
 }
 
 // Reused from http://stackoverflow.com/a/12730776/2496827
