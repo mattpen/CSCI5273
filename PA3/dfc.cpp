@@ -34,11 +34,11 @@ struct Config {
 // Get the configuration file and initialize the global config parameter
 void initConfig();
 
-void handleList();
+void handleList( std::string command );
 
-void handleGet( std::string filename );
+void handleGet( std::string command );
 
-void handlePut( std::string filename );
+void handlePut( std::string command );
 
 // clear socket errors
 int getSO_ERROR( int fd );
@@ -56,14 +56,15 @@ int main( int argc, char *argv[] ) {
     command.assign( cmd );
 
     if ( command.find( "LIST" ) == 0 ) {
-      handleList();
+      handleList( command );
     }
     else if ( command.find( "GET" ) == 0 ) {
-      handleGet( command.substr( 4, command.length() - 4 ) );
+      handleGet( command );
     }
     else if ( command.find( "PUT" ) == 0 ) {
-      handlePut( command.substr( 4, command.length() - 4 ) );
+      handlePut( command );
     }
+    // TODO: add MKDIR
     else if ( command.find( "EXIT" ) == 0 ) {
       return 0;
     }
@@ -169,6 +170,8 @@ int connectToServer( int i ) {
   }
   puts( "Socket created" );
 
+  // TODO:: add 1 second timeout to socket options
+
   // Allow client to reuse port/addr if in TIME_WAIT state
   int enable = 1;
   if ( setsockopt( newSock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof( int ) ) < 0 ) {
@@ -226,13 +229,8 @@ std::string getResponse( int sock ) {
   return ret;
 }
 
-void handleList() {
+void handleList( std::string command ) {
   printf( "handling list\n" );
-//  char client_message[MSG_SIZE];
-//    write( config.serverSockets[ i ], "LIST", 4 );
-//    bzero( client_message, MSG_SIZE );
-//    read( config.serverSockets[ i ], client_message, MSG_SIZE );
-//    printf( "%s\n", client_message );
 
   int sock;
   std::string response;
@@ -240,8 +238,9 @@ void handleList() {
   for ( int i = 0; i < 4; i++ ) {
     sock = connectToServer( i );
     if ( sock != -1 ) {
+      // TODO: create request string: LIST un:pw {directory}
       sendRequest( "LIST", sock );
-      response = getResponse( sock );
+      response.append( getResponse( sock ) );
       printf( "%s\n", response.c_str() );
     }
   }
@@ -249,42 +248,49 @@ void handleList() {
   closeSocket( sock );
 }
 
-void handleGet( std::string filename ) {
+void handleGet( std::string command ) {
   printf( "handling get\n" );
 
   int sock;
+  std::string pieces[4];
   std::string response;
 
   for ( int i = 0; i < 4; i++ ) {
     sock = connectToServer( i );
     if ( sock != -1 ) {
-      // TODO: request should include un:pw, 'p', directory
-      // TODO: resend request with 's' if piece not found,
-      sendRequest( filename, sock );
-      response = getResponse( sock );
-      // TODO: decrypt response
-      // TODO: reconstruct responses
-
-      // TODO: error if pieces missing
+      // TODO: send request string: GET un:pw path filename p
+      // TODO: resend request with rank 's' if piece not found,
+      // TODO: error if both p and s missing
     }
+    closeSocket( sock );
   }
-  // TODO: write response to ./{$filename}
 
-  closeSocket( sock );
+  for ( int i = 0; i < 4; i++ ) {
+    response.append( pieces[ i ] );
+  }
+  // TODO: decrypt response
+  // TODO: write response to ./{$filename}
 }
 
-void handlePut( std::string filename ) {
+void handlePut( std::string command ) {
   printf( "handling put\n" );
 
   int sock;
-  std::string request;
 
-  //TODO: get add filename, un/pw, directory to request
-  //TODO: get the data into memory and hash it
-  //TODO: break the data into 4 pieces, and append it with a p/s to the request
-  //TODO: send the appropriate requests to each server
-  //TODO: encrypt response
+  //TODO: get the data into memory and hash it to get rank and position
+  //TODO: encrypt data
+  //TODO: break the data into 4 pieces
+  for ( int i = 0; i < 4; i++ ) {
+    sock = connectToServer( i );
+    if ( sock != -1 ) {
+      //TODO: create request string: PUT un:pw path filename rank pieceNumber dataPiece
+      //TODO: connect to server and send request
+    }
+    closeSocket( sock );
+  }
 }
+
+//TODO:: add handleMkdir()
 
 // Reused from http://stackoverflow.com/a/12730776/2496827
 int getSO_ERROR( int fd ) {

@@ -18,12 +18,15 @@
 #include <thread> // Needed for sleep to wait for threads to close after ctrl+c
 
 struct Request {
+    std::string method;
     std::string username;
     std::string password;
-    bool isPrimaryRequest;
-    std::string directory;
+    char rank;
+    std::string path;
     std::string filename;
     std::string data;
+    std::string error;
+    int pieceNumber;
 };
 
 std::unordered_map< std::string, std::string > userPasswordMap;
@@ -43,16 +46,17 @@ void *requestCycle( void * );
 // Read request into string from socket
 std::string getRequest( int sock );
 
+// Read request string and populate a Request object
+Request parseRequest( std::string requestString );
+
 // Write response string to socket
 void sendResponse( int sock, std::string response );
 
-bool requestAuthorized( std::string request );
+std::string handleListResponse( Request request );
 
-std::string handleListResponse( std::string request );
+std::string handleGetResponse( Request request );
 
-std::string handleGetResponse( std::string request );
-
-std::string handlePutResponse( std::string request );
+std::string handlePutResponse( Request request );
 
 int main( int argc, char *argv[] ) {
   if ( argc < 3 ) {
@@ -126,6 +130,44 @@ int main( int argc, char *argv[] ) {
   return 0;
 }
 
+//the thread function
+void *requestCycle( void *socket_desc ) {
+  thread_count++;
+
+  //Get the socket descriptor
+  int sock = *( int * ) socket_desc;
+
+
+  Request request;
+  printf( "Server (%s) received a request.\n", directory.c_str() );
+  std::string response;
+
+  request = parseRequest( getRequest( sock ) );
+
+  if ( request.error.compare( "" ) == 0 ) {
+    if ( request.method.compare( "LIST" ) == 0 ) {
+      response = handleListResponse( request );
+    }
+    else if ( request.method.compare( "GET" ) == 0 ) {
+      response = handleGetResponse( request );
+    }
+    else if ( request.method.compare( "PUT" ) == 0 ) {
+      response = handlePutResponse( request );
+    }
+  }
+  else {
+    request.error.insert( 0, "ERR:" );
+    response = request.error;
+  }
+
+  sendResponse( sock, response );
+  closeSocket( sock );
+  free( socket_desc );
+
+  thread_count--;
+  return 0;
+}
+
 
 std::string getRequest( int sock ) {
   char client_message[MSG_SIZE];
@@ -166,60 +208,138 @@ void sendResponse( int sock, std::string response ) {
   }
 }
 
+//TODO: implement "MKDIR" request
+Request parseRequest( std::string requestString ) {
+  Request request;
+  uint64_t start = 0;
+  uint64_t end = 0;
 
-//the thread function
-void *requestCycle( void *socket_desc ) {
-  thread_count++;
-
-  //Get the socket descriptor
-  int sock = *( int * ) socket_desc;
-
-
-  std::string request;
-  std::string response;
-
-  request = getRequest( sock );
-
-  if ( requestAuthorized( request ) ) {
-    printf( "Client (%s) Received message: %s\n", directory.c_str(), request.c_str() );
-
-    if ( request.find( "LIST" ) == 0 ) {
-      response = handleListResponse( request );
-    }
-    else if ( request.find( "GET" ) == 0 ) {
-      response = handleGetResponse( request );
-    }
-    else if ( request.find( "PUT" ) == 0 ) {
-      response = handlePutResponse( request );
-    }
-
-    sendResponse( sock, response );
+  end = requestString.find( " " );
+  // Validate token
+  if ( end == -1 ) {
+    request.error = "EMPTY_REQUEST";
+    return request;
   }
 
-  closeSocket( sock );
-  free( socket_desc );
+  request.method = requestString.substr( start, end );
+  printf( "Server %s parsing request. Found method=:%s:\n", directory.c_str(), request.method.c_str() );
 
-  thread_count--;
-  return 0;
+  // Validate method
+  if ( !( request.method.compare( "GET" ) == 0
+          || request.method.compare( "LIST" ) == 0
+          || request.method.compare( "PUT" ) == 0 ) ) {
+
+    request.error = "UNSUPPORTED_METHOD";
+    return request;
+  }
+
+  start = end + 1;
+  end = requestString.find( " ", start );
+  // validate token
+  if ( ( requestString.find( ":", start, end - start ) == -1 )
+       || ( end <= start ) ) {
+    request.error = "BAD_AUTHORIZATION_TOKEN";
+    return request;
+  }
+
+  request.username = requestString.substr( start, requestString.find( ":", start ) - start );
+  request.password = requestString.substr( requestString.find( ":", start ), end - start );
+
+  printf( "Server %s parsing request. Found username=:%s:\n", directory.c_str(), request.username.c_str() );
+  printf( "Server %s parsing request. Found password=:%s:\n", directory.c_str(), request.password.c_str() );
+
+  // Authorize user
+  if ( ( request.username.length() <= 0 || request.password.length() <= 0 )
+       || ( userPasswordMap.find( request.username ) == userPasswordMap.end() )
+       || ( userPasswordMap[ request.username ].compare( request.password ) != 0 ) ) {
+    request.error = "BAD_AUTHORIZATION_TOKEN";
+    return request;
+  }
+
+
+  start = end + 1;
+  end = requestString.find( " ", start );
+  // validate path token or return list with empty path
+  if ( ( end <= start ) ) {
+    if ( request.method.compare( "LIST" ) != 0 ) {
+      request.error = "BAD_PATH_TOKEN";
+    }
+    return request;
+  }
+
+  request.path = requestString.substr( start, end - start );
+  printf( "Server %s parsing request. Found path=:%s:\n", directory.c_str(), request.path.c_str() );
+
+  start = end + 1;
+  end = requestString.find( " ", start );
+  // validate path token or return list with empty path
+  if ( ( end <= start ) ) {
+    if ( request.method.compare( "LIST" ) != 0 ) {
+      request.error = "BAD_FILENAME_TOKEN";
+    }
+    return request;
+  }
+
+  request.filename = requestString.substr( start, end - start );
+  printf( "Server %s parsing request. Found filename=:%s:\n", directory.c_str(), request.filename.c_str() );
+
+  // We have enough info for list, stop processing
+  if ( request.method.compare( "LIST" ) == 0 ) {
+    return request;
+  }
+
+  start = end + 1;
+  // Validate rank token
+  if ( !( requestString[ start ] == 'p' || requestString[ start ] == 's' ) ) {
+    request.error = "BAD_RANK_TOKEN";
+    return request;
+  }
+  request.rank = requestString[ start ] == 'p';
+  printf( "Server %s parsing request. Found rank=:%c:\n", directory.c_str(), request.rank );
+
+
+  if ( request.method.compare( "GET" ) == 0 ) {
+    return request;
+  }
+
+  start += 2;
+  if ( start >= requestString.length() ) {
+    request.error = "MISSING_PIECE_TOKEN";
+    return request;
+  }
+
+  request.pieceNumber = std::stoi( requestString.substr( start, 1 ) );
+  if ( request.pieceNumber < 1 || request.pieceNumber > 4 ) {
+    request.error = "BAD_PIECE_TOKEN";
+    return request;
+  }
+
+  start += 2;
+  // Validate data token
+  if ( start >= requestString.length() ) {
+    request.error = "EMPTY_PUT_REQUEST";
+    return request;
+  }
+  request.data = requestString.substr( start, requestString.length() - start );
+  printf( "Server %s parsing request. Found data=:%s:\n", directory.c_str(), request.data.c_str() );
+  return request;
 }
 
 
-bool requestAuthorized( std::string request ) {
-  // TODO: parse un:pw from request
-  // TODO: return ( userPasswordMap has user && userPasswordMap[user] == password )
+std::string handleListResponse( Request request ) {
+  // TODO: get list of files in request.path and return them
+  return request.method;
+
 }
 
-std::string handleListResponse( std::string request ) {
-  return "";
-  // TODO: get list of files and return it, possibly directory specific?
+std::string handleGetResponse( Request request ) {
+  // TODO: parse filename and directory from request.path. Look for /directory/.filename.N.R, where N is any number 1-4 and R = request.rank
+  return request.method;
 }
 
-std::string handleGetResponse( std::string request ) {
-  return "";
-}
-
-std::string handlePutResponse( std::string request ) {
-  return "";
+std::string handlePutResponse( Request request ) {
+  // TODO:  parse filename and directory from request.path. replace/create a file called /directory/.request.path.N.R with request.data where N = request.pieceNumber and R = request.rank
+  return request.method;
 }
 
 
