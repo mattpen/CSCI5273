@@ -85,7 +85,8 @@ void initConfig() {
   }
 
   while ( std::getline( ifs, line ) ) {
-    std::istringstream iss( line );
+    // TODO: remove this line if not neeted
+    //    std::istringstream iss( line );
     try {
       if ( line.find( "#" ) == 0 || line.compare( "" ) == 0 ) {
         // Ignore comments and empty lines
@@ -170,13 +171,26 @@ int connectToServer( int i ) {
   }
   puts( "Socket created" );
 
-  // TODO:: add 1 second timeout to socket options
+  // Add a 1 second timeout
+  struct timeval timeout;
+  timeout.tv_sec = 1;
+  timeout.tv_usec = 0;
+  if ( setsockopt( newSock, SOL_SOCKET, SO_RCVTIMEO, ( char * ) &timeout, sizeof( timeout ) ) < 0 ) {
+    char err[MSG_SIZE];
+    sprintf( err, "setsockopt(SO_RCVTIMEO) failed for server(%d). Error", i );
+    perror( err );
+  }
+  if ( setsockopt( newSock, SOL_SOCKET, SO_SNDTIMEO, ( char * ) &timeout, sizeof( timeout ) ) < 0 ) {
+    char err[MSG_SIZE];
+    sprintf( err, "setsockopt(SO_SNDTIMEO) failed for server(%d). Error", i );
+    perror( err );
+  }
 
   // Allow client to reuse port/addr if in TIME_WAIT state
   int enable = 1;
   if ( setsockopt( newSock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof( int ) ) < 0 ) {
     char err[MSG_SIZE];
-    sprintf( err, "setsockopt(SO_REUSEADDR) failedfor %d. Error", i );
+    sprintf( err, "setsockopt(SO_REUSEADDR) failed for server(%d). Error", i );
     perror( err );
   }
 
@@ -246,7 +260,7 @@ void handleList( std::string command ) {
   request.append( config.username );
   request.append( ":" );
   request.append( config.password );
-  request.append( " /" );
+  request.append( command.substr( command.find( " " ), command.length() - command.find( " " ) ) );
 
   printf( "LIST SENT: %s\n", request.c_str() );
   for ( int i = 0; i < 4; i++ ) {
@@ -267,20 +281,60 @@ void handleGet( std::string command ) {
 
   int sock;
   std::string pieces[4];
-  std::string response;
+  //  std::string response;
+  std::string request;
+  std::string error;
+
+  request = "GET ";
+  request.append( config.username );
+  request.append( ":" );
+  request.append( config.password );
+  
+  uint64_t fnStart, fnLength, pathStart, pathLength;
+  fnStart = command.find( " " ) + 1;
+  pathStart = command.rfind( " " ) + 1;
+  if ( pathStart != fnStart ) {
+    fnLength = pathStart - fnStart - 1;
+    pathLength = command.length() - pathStart;
+    request.append( " " );
+    request.append( command.substr( pathStart, pathLength ) );
+    request.append( " " );
+    request.append( command.substr( fnStart, fnLength ) );
+  }
+  else {
+    request.append( command.substr( fnStart, command.length() - command.find( " " ) ) );
+  }
+
+  request.append( " p" );
 
   for ( int i = 0; i < 4; i++ ) {
     sock = connectToServer( i );
     if ( sock != -1 ) {
-      // TODO: send request string: GET un:pw path filename p
-      // TODO: resend request with rank 's' if piece not found,
-      // TODO: error if both p and s missing
+      sendRequest( request, sock );
+      pieces[ i ] = getResponse( sock );
     }
     closeSocket( sock );
   }
 
   for ( int i = 0; i < 4; i++ ) {
-    response.append( pieces[ i ] );
+    if ( pieces[ i ].find( "ERROR" ) == 0 ) {
+      request = request.substr( 0, request.length() - 2 );
+      request.append( " s" );
+      sock = connectToServer( i );
+      if ( sock != -1 ) {
+        sendRequest( request, sock );
+        pieces[ i ] = getResponse( sock );
+      }
+      closeSocket( sock );
+    }
+    if ( pieces[ i ].find( "ERROR" ) == 0 ) {
+      printf( "File is incomplete.\n" );
+      return;
+    }
+  }
+
+  for ( int i = 0; i < 4; i++ ) {
+    // Reconstruct pieces based on hash of filesize
   }
   // TODO: decrypt response
   // TODO: write response to ./{$filename}
@@ -291,7 +345,7 @@ void handlePut( std::string command ) {
 
   int sock;
 
-  //TODO: get the data into memory and hash it to get rank and position
+  //TODO: read the file into memory and hash it to get rank and position
   //TODO: encrypt data
   //TODO: break the data into 4 pieces
   for ( int i = 0; i < 4; i++ ) {

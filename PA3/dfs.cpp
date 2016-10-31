@@ -261,10 +261,8 @@ Request parseRequest( std::string requestString ) {
     request.error = "BAD_AUTHORIZATION_TOKEN";
     return request;
   }
-
   request.username = requestString.substr( start, delim - start );
   request.password = requestString.substr( delim + 1, end - delim - 1 );
-
   printf( "Server %s parsing request. Found username=:%s:\n", directory.c_str(), request.username.c_str() );
   printf( "Server %s parsing request. Found password=:%s:\n", directory.c_str(), request.password.c_str() );
 
@@ -276,7 +274,6 @@ Request parseRequest( std::string requestString ) {
     return request;
   }
 
-
   start = end + 1;
   end = requestString.find( " ", start );
   // validate path token or return list with empty path
@@ -286,31 +283,23 @@ Request parseRequest( std::string requestString ) {
     }
     return request;
   }
-
   request.path = requestString.substr( start, end - start );
   printf( "Server %s parsing request. Found path=:%s:\n", directory.c_str(), request.path.c_str() );
-
-  start = end + 1;
-  end = requestString.find( " ", start );
-  // validate path token or return list with empty path
-  if ( ( end <= start ) ) {
-//    if ( request.method.compare( "LIST" ) != 0 ) {
-//      request.error = "BAD_FILENAME_TOKEN";
-//    }
-    return request;
-  }
-
-  if ( request.method.compare( "LIST" ) == 0 ) {
-    return request;
-  }
-
-  request.filename = requestString.substr( start, end - start );
-  printf( "Server %s parsing request. Found filename=:%s:\n", directory.c_str(), request.filename.c_str() );
 
   // We have enough info for list, stop processing
   if ( request.method.compare( "LIST" ) == 0 ) {
     return request;
   }
+
+  start = end + 1;
+  end = requestString.find( " ", start );
+  // validate path token or return list with empty path
+  if ( ( end <= start ) ) {
+    request.error = "BAD_FILENAME_TOKEN";
+    return request;
+  }
+  request.filename = requestString.substr( start, end - start );
+  printf( "Server %s parsing request. Found filename=:%s:\n", directory.c_str(), request.filename.c_str() );
 
   start = end + 1;
   // Validate rank token
@@ -351,9 +340,25 @@ Request parseRequest( std::string requestString ) {
 
 
 std::string handleListResponse( Request request ) {
-  // TODO: get list of files in request.path and return them
-  return request.method;
+  // ls the directory using system calls
+  std::string command = "/bin/ls .";
+  command.append( directory );
+  command.append( request.path );
+  FILE *fp = popen( command.c_str(), "r" );
+  if ( fp == NULL ) {
+    return "";
+  }
 
+  // Store the output of the ls command in a response
+  std::string response = "";
+  char buf[MSG_SIZE];
+  while ( fgets( buf, sizeof( buf ) - 1, fp ) != NULL ) {
+    response.append( buf );
+  }
+
+  /* close file */
+  pclose( fp );
+  return response;
 }
 
 std::string handleGetResponse( Request request ) {
@@ -366,18 +371,22 @@ std::string handlePutResponse( Request request ) {
   return request.method;
 }
 
+// TODO: handleMkdirResponse( Request request )
+
 void initAuthentication() {
-  std::ifstream infile( "dfs.conf" );
+  std::ifstream ifs( "dfs.conf" );
   std::string line;
 
-  while ( std::getline( infile, line ) ) {
-    std::istringstream iss( line );
+  while ( std::getline( ifs, line ) ) {
+    // TODO: remove this line if not neeted
+    // std::istringstream iss( line );
     try {
       if ( line.find( "#" ) == 0 || line.compare( "" ) == 0 ) {
         // Don't try to parse comments
         continue;
       }
       else if ( line.find( " " ) >= 0 ) {
+        // Username Password is the only supported directive
         userPasswordMap[ line.substr( 0, line.find( " " ) ) ] =
           line.substr( line.find( " " ) + 1, line.length() - line.find( " " ) - 1 );
         printf( "Added un:pw: (%s:%s)\n",
