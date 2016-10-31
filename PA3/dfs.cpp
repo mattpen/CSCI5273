@@ -58,6 +58,8 @@ std::string handleGetResponse( Request request );
 
 std::string handlePutResponse( Request request );
 
+void initAuthentication();
+
 int main( int argc, char *argv[] ) {
   if ( argc < 3 ) {
     printf( "USAGE: <root_directory> <server_port>\n" );
@@ -66,6 +68,8 @@ int main( int argc, char *argv[] ) {
   directory = argv[ 1 ];
 
   thread_count = 0;
+
+  initAuthentication();
 
   // Socket values
   int socket_desc, client_sock, c, *new_sock;
@@ -154,9 +158,10 @@ void *requestCycle( void *socket_desc ) {
     else if ( request.method.compare( "PUT" ) == 0 ) {
       response = handlePutResponse( request );
     }
+    response.insert( 0, "SUCCESS " );
   }
   else {
-    request.error.insert( 0, "ERR:" );
+    request.error.insert( 0, "ERROR " );
     response = request.error;
   }
 
@@ -176,9 +181,11 @@ std::string getRequest( int sock ) {
   std::string ret = "";
 
   read_size = recv( sock, client_message, MSG_SIZE, 0 );
+  ret.append( client_message );
 
-  if ( strncmp( client_message, "PUT", 3 ) == 0 ) {
-    while ( read_size > 0 ) {
+
+  if ( read_size == MSG_SIZE ) {
+    while ( read_size > 0 && read_size == MSG_SIZE ) {
       ret.append( client_message );
       bzero( client_message, MSG_SIZE );
       read_size = recv( sock, client_message, MSG_SIZE, 0 );
@@ -189,13 +196,13 @@ std::string getRequest( int sock ) {
     ret = "EXIT";
     perror( "recv failed" );
   }
-
+  printf( "getRequest server(%s) size(%ld): %s\n", directory.c_str(), read_size, ret.c_str() );
   return ret;
 }
 
 void sendResponse( int sock, std::string response ) {
   ssize_t send_size;
-  size_t file_read_size = sizeof( response.c_str() );
+  size_t file_read_size = strlen( response.c_str() );
   unsigned char *pbuf = ( unsigned char * ) response.c_str();
 
   while ( file_read_size > 0 ) {
@@ -211,9 +218,21 @@ void sendResponse( int sock, std::string response ) {
 //TODO: implement "MKDIR" request
 Request parseRequest( std::string requestString ) {
   Request request;
+  request.method = "";
+  request.username = "";
+  request.password = "";
+  request.rank = '\0';
+  request.path = "";
+  request.filename = "";
+  request.data = "";
+  request.error = "";
+  request.pieceNumber = -1;
+
+
   uint64_t start = 0;
   uint64_t end = 0;
 
+  printf( "%s Parsing request: %s\n", directory.c_str(), requestString.c_str() );
   end = requestString.find( " " );
   // Validate token
   if ( end == -1 ) {
@@ -235,15 +254,16 @@ Request parseRequest( std::string requestString ) {
 
   start = end + 1;
   end = requestString.find( " ", start );
+  uint64_t delim = requestString.find( ":", start );
+  printf( "(%s) looking in %ld:%ld for un:pw\n", directory.c_str(), start, end );
   // validate token
-  if ( ( requestString.find( ":", start, end - start ) == -1 )
-       || ( end <= start ) ) {
+  if ( delim == -1 || delim >= end || end <= start ) {
     request.error = "BAD_AUTHORIZATION_TOKEN";
     return request;
   }
 
-  request.username = requestString.substr( start, requestString.find( ":", start ) - start );
-  request.password = requestString.substr( requestString.find( ":", start ), end - start );
+  request.username = requestString.substr( start, delim - start );
+  request.password = requestString.substr( delim + 1, end - delim - 1 );
 
   printf( "Server %s parsing request. Found username=:%s:\n", directory.c_str(), request.username.c_str() );
   printf( "Server %s parsing request. Found password=:%s:\n", directory.c_str(), request.password.c_str() );
@@ -274,9 +294,13 @@ Request parseRequest( std::string requestString ) {
   end = requestString.find( " ", start );
   // validate path token or return list with empty path
   if ( ( end <= start ) ) {
-    if ( request.method.compare( "LIST" ) != 0 ) {
-      request.error = "BAD_FILENAME_TOKEN";
-    }
+//    if ( request.method.compare( "LIST" ) != 0 ) {
+//      request.error = "BAD_FILENAME_TOKEN";
+//    }
+    return request;
+  }
+
+  if ( request.method.compare( "LIST" ) == 0 ) {
     return request;
   }
 
@@ -342,6 +366,37 @@ std::string handlePutResponse( Request request ) {
   return request.method;
 }
 
+void initAuthentication() {
+  std::ifstream infile( "dfs.conf" );
+  std::string line;
+
+  while ( std::getline( infile, line ) ) {
+    std::istringstream iss( line );
+    try {
+      if ( line.find( "#" ) == 0 || line.compare( "" ) == 0 ) {
+        // Don't try to parse comments
+        continue;
+      }
+      else if ( line.find( " " ) >= 0 ) {
+        userPasswordMap[ line.substr( 0, line.find( " " ) ) ] =
+          line.substr( line.find( " " ) + 1, line.length() - line.find( " " ) - 1 );
+        printf( "Added un:pw: (%s:%s)\n",
+                line.substr( 0, line.find( " " ) ).c_str(),
+                userPasswordMap[ line.substr( 0, line.find( " " ) ) ].c_str() );
+      }
+      else {
+        // Add support for additional directives here
+      }
+    }
+    catch ( int e ) {
+      // If configuration parse fails then exit immediately
+      printf( "Error occurred reading line: %s in dfs.conf, error message: %d\n", line.c_str(), e );
+      exit( 1 );
+    }
+  }
+
+  return;
+}
 
 // Reused from http://stackoverflow.com/a/12730776/2496827
 int getSO_ERROR( int fd ) {

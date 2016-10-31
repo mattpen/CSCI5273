@@ -64,7 +64,7 @@ int main( int argc, char *argv[] ) {
     else if ( command.find( "PUT" ) == 0 ) {
       handlePut( command );
     }
-    // TODO: add MKDIR
+      // TODO: add MKDIR
     else if ( command.find( "EXIT" ) == 0 ) {
       return 0;
     }
@@ -164,9 +164,9 @@ int connectToServer( int i ) {
 
   newSock = socket( AF_INET, SOCK_STREAM, 0 );
   if ( newSock == -1 ) {
-    char e[MSG_SIZE];
-    sprintf( e, "Sock not created for %d. Error", i );
-    perror( e );
+    char err[MSG_SIZE];
+    sprintf( err, "Sock not created for %d. Error", i );
+    perror( err );
   }
   puts( "Socket created" );
 
@@ -175,9 +175,9 @@ int connectToServer( int i ) {
   // Allow client to reuse port/addr if in TIME_WAIT state
   int enable = 1;
   if ( setsockopt( newSock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof( int ) ) < 0 ) {
-    char e[MSG_SIZE];
-    sprintf( e, "setsockopt(SO_REUSEADDR) failedfor %d. Error", i );
-    perror( e );
+    char err[MSG_SIZE];
+    sprintf( err, "setsockopt(SO_REUSEADDR) failedfor %d. Error", i );
+    perror( err );
   }
 
   server.sin_addr.s_addr = inet_addr( config.servers[ i ].ipAddr.c_str() );
@@ -185,9 +185,9 @@ int connectToServer( int i ) {
   server.sin_port = htons( ( uint16_t ) config.servers[ i ].port );
 
   if ( connect( newSock, ( struct sockaddr * ) &server, sizeof( server ) ) < 0 ) {
-    char e[MSG_SIZE];
-    sprintf( e, "Connect failed for %d. Error", i );
-    perror( e );
+    char err[MSG_SIZE];
+    sprintf( err, "Connect failed for %d. Error", i );
+    perror( err );
   }
 
   return newSock;
@@ -195,11 +195,16 @@ int connectToServer( int i ) {
 
 void sendRequest( std::string request, int sock ) {
   ssize_t send_size;
-  size_t file_read_size = sizeof( request.c_str() );
+  size_t file_read_size = request.length();
   unsigned char *pbuf = ( unsigned char * ) request.c_str();
-
+  printf( "Client sending (%s), sizeof(%ld), strlen(%ld), length(%ld)\n",
+          request.c_str(),
+          file_read_size,
+          strlen( request.c_str() ),
+          request.length() );
   while ( file_read_size > 0 ) {
     send_size = send( sock, pbuf, file_read_size, 0 );
+    printf( "Client sent size(%ld), pbuf(%*s)\n", send_size, ( int ) send_size, pbuf );
     if ( send_size < 0 ) {
       perror( "Error sending get body" );
     }
@@ -233,17 +238,26 @@ void handleList( std::string command ) {
   printf( "handling list\n" );
 
   int sock;
-  std::string response;
+  std::string request;
+  std::string pieces[4];
+//  std::string response;
 
+  request = "LIST ";
+  request.append( config.username );
+  request.append( ":" );
+  request.append( config.password );
+  request.append( " /" );
+
+  printf( "LIST SENT: %s\n", request.c_str() );
   for ( int i = 0; i < 4; i++ ) {
     sock = connectToServer( i );
     if ( sock != -1 ) {
-      // TODO: create request string: LIST un:pw {directory}
-      sendRequest( "LIST", sock );
-      response.append( getResponse( sock ) );
-      printf( "%s\n", response.c_str() );
+      sendRequest( request, sock );
+      pieces[ i ] = getResponse( sock );
+      printf( "LIST RECVD: %s\n", pieces[ i ].c_str() );
     }
   }
+
   // TODO: reconstruct full list with incomplete warnings
   closeSocket( sock );
 }
