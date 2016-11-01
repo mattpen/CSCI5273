@@ -6,16 +6,16 @@
   * Provides Distributed File Server
   **/
 
-
 #include <netinet/in.h>
 #include <unistd.h>
-//#include <signal.h>
 #include <memory.h>
-#include <unordered_map> // Used for Request.headers and Config.filtypes
-#include <fstream> // Used to retrieve files from the fs
-#include <sstream> // Used to easily read/write small text buffers
-#include <atomic> // Needed to maintain count of threads
-#include <thread> // Needed for sleep to wait for threads to close after ctrl+c
+#include <unordered_map>
+#include <fstream>
+#include <sstream>
+#include <atomic>
+#include <thread>
+#include <iostream>
+#include <vector>
 
 struct Request {
     std::string method;
@@ -29,9 +29,11 @@ struct Request {
     int pieceNumber;
 };
 
-std::unordered_map< std::string, std::string > userPasswordMap;
-std::atomic< int > thread_count;
+std::unordered_map<std::string, std::string> userPasswordMap;
+std::atomic<int> thread_count;
 std::string directory;
+
+
 #define MSG_SIZE 2000
 
 // clear socket errors
@@ -60,12 +62,17 @@ std::string handlePutResponse( Request request );
 
 void initAuthentication();
 
+std::vector<char> loadFileToVector( std::string filename );
+
+void saveVectorToFile( std::vector<char> data, std::string filename );
+
 int main( int argc, char *argv[] ) {
   if ( argc < 3 ) {
     printf( "USAGE: <root_directory> <server_port>\n" );
     exit( 1 );
   }
   directory = argv[ 1 ];
+
 
   thread_count = 0;
 
@@ -363,6 +370,7 @@ std::string handleListResponse( Request request ) {
 
 std::string handleGetResponse( Request request ) {
   // TODO: parse filename and directory from request.path. Look for /directory/.filename.N.R, where N is any number 1-4 and R = request.rank
+  // TODO: Insert "SUCCESS {PIECE}.{RANK} LENGTH\n" to the beginning of the response
   return request.method;
 }
 
@@ -405,6 +413,19 @@ void initAuthentication() {
   }
 
   return;
+}
+
+std::vector<char> loadFileToVector( std::string filename ) {
+  std::ifstream ifs( filename );
+  if ( !ifs ) {
+    perror( "Could not open file:" );
+  }
+
+  return std::vector<char>( std::istreambuf_iterator<char>( ifs ), std::istreambuf_iterator<char>() );
+}
+
+void saveVectorToFile( std::vector<char> data, std::string filename ) {
+
 }
 
 // Reused from http://stackoverflow.com/a/12730776/2496827

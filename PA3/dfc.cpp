@@ -9,13 +9,10 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-//#include <signal.h>
 #include <memory.h>
-//#include <unordered_map>
 #include <fstream>
 #include <sstream>
-//#include <atomic>
-//#include <thread>
+#include <vector>
 
 #define MSG_SIZE 2000
 
@@ -39,6 +36,16 @@ void handleList( std::string command );
 void handleGet( std::string command );
 
 void handlePut( std::string command );
+
+void encryptFile( std::string filename );
+
+void decryptFile( std::string filename )
+
+std::vector<char> loadFileToVector( std::string filename );
+
+void saveVectorToFile( std::vector<char> data, std::string filename );
+
+int getBinForFile( std::string filename );
 
 // clear socket errors
 int getSO_ERROR( int fd );
@@ -281,15 +288,15 @@ void handleGet( std::string command ) {
 
   int sock;
   std::string pieces[4];
-  //  std::string response;
+
   std::string request;
-  std::string error;
+  std::string filename;
 
   request = "GET ";
   request.append( config.username );
   request.append( ":" );
   request.append( config.password );
-  
+
   uint64_t fnStart, fnLength, pathStart, pathLength;
   fnStart = command.find( " " ) + 1;
   pathStart = command.rfind( " " ) + 1;
@@ -299,10 +306,12 @@ void handleGet( std::string command ) {
     request.append( " " );
     request.append( command.substr( pathStart, pathLength ) );
     request.append( " " );
+    filename = command.substr( fnStart, fnLength );
     request.append( command.substr( fnStart, fnLength ) );
   }
   else {
-    request.append( command.substr( fnStart, command.length() - command.find( " " ) ) );
+    filename = command.substr( fnStart, command.length() - command.find( " " ) );
+    request.append( filename );
   }
 
   request.append( " p" );
@@ -334,31 +343,123 @@ void handleGet( std::string command ) {
   }
 
   for ( int i = 0; i < 4; i++ ) {
-    // Reconstruct pieces based on hash of filesize
+    // TODO:  Reconstruct pieces
   }
-  // TODO: decrypt response
-  // TODO: write response to ./{$filename}
+
+  // TODO: write response to .filename
+  decryptFile( filename );
+  // TODO: delete .filename
 }
 
 void handlePut( std::string command ) {
   printf( "handling put\n" );
 
-  int sock;
+  std::string request;
+  std::string filename;
 
-  //TODO: read the file into memory and hash it to get rank and position
-  //TODO: encrypt data
-  //TODO: break the data into 4 pieces
+  request = "PUT ";
+  request.append( config.username );
+  request.append( ":" );
+  request.append( config.password );
+
+  uint64_t fnStart, fnLength, pathStart, pathLength;
+  fnStart = command.find( " " ) + 1;
+  pathStart = command.rfind( " " ) + 1;
+  if ( pathStart != fnStart ) {
+    fnLength = pathStart - fnStart - 1;
+    pathLength = command.length() - pathStart;
+    request.append( " " );
+    request.append( command.substr( pathStart, pathLength ) );
+    request.append( " " );
+    filename = command.substr( fnStart, fnLength );
+    request.append( command.substr( fnStart, fnLength ) );
+  }
+  else {
+    filename = command.substr( fnStart, command.length() - command.find( " " ) );
+    request.append( filename );
+  }
+
+  request.append( " p" );
+
+  int bin = getBinForFile( filename );
+  encryptFile( filename );
+  //TODO: read .filename into memory and break the data into 4 pieces
+
+  int sock;
   for ( int i = 0; i < 4; i++ ) {
     sock = connectToServer( i );
     if ( sock != -1 ) {
-      //TODO: create request string: PUT un:pw path filename rank pieceNumber dataPiece
-      //TODO: connect to server and send request
+      //TODO: connect to servers and send pieces
     }
     closeSocket( sock );
   }
+
+  // TODO: delete .filename
 }
 
 //TODO:: add handleMkdir()
+
+std::vector<char> loadFileToVector( std::string filename ) {
+  std::ifstream ifs( filename );
+  if ( !ifs ) {
+    perror( "Could not open file:" );
+  }
+
+  return std::vector<char>( std::istreambuf_iterator<char>( ifs ), std::istreambuf_iterator<char>() );
+}
+
+void saveVectorToFile( std::vector<char> data, std::string filename ) {
+  //Save data to filename
+}
+
+int getBinForFile( std::string filename ) {
+  // call the getbin python script
+  std::string command = "python getbin.py ";
+  command.append( filename );
+  FILE *fp = popen( command.c_str(), "r" );
+  if ( fp == NULL ) {
+    return -1;
+  }
+
+  // get the value from stdout
+  char buf[4];
+  fgets( buf, sizeof( buf ) - 1, fp );
+
+  // close file
+  pclose( fp );
+  return std::stoi( buf );
+}
+
+void encryptFile( std::string filename ) {
+  // encrypt the file in tempfile .filename
+  std::string command = "openssl aes-256-cbc -salt -in ";
+  command.append( filename );
+  command.append( " -out ." );
+  command.append( filename );
+  command.append( " -pass file:enc.key" );
+
+  // run the command
+  FILE *fp = popen( command.c_str(), "r" );
+  if ( fp == NULL ) {
+    perror( "Problem running encryptFile:" );
+  }
+  pclose( fp );
+}
+
+void decryptFile( std::string filename ) {
+  // encrypt the file in tempfile .filename
+  std::string command = "openssl aes-256-cbc -d -in ."
+  command.append( filename );
+  command.append( " -out ";
+  command.append( filename );
+  command.append( " -pass file:enc.key" );
+  FILE *fp = popen( command.c_str(), "r" );
+  if ( fp == NULL ) {
+    perror( "Problem running decryptFile:" );
+  }
+  // close file
+  pclose( fp );
+}
 
 // Reused from http://stackoverflow.com/a/12730776/2496827
 int getSO_ERROR( int fd ) {
