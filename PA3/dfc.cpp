@@ -13,6 +13,7 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <math.h>
 
 #define MSG_SIZE 2000
 
@@ -28,6 +29,11 @@ struct Config {
     struct Server servers[4];
 } config;
 
+struct Response {
+    std::string header;
+    std::vector<char> body;
+};
+
 // Get the configuration file and initialize the global config parameter
 void initConfig();
 
@@ -39,9 +45,10 @@ void handlePut( std::string command );
 
 void encryptFile( std::string filename );
 
-void decryptFile( std::string filename )
+void decryptFile( std::string filename );
 
-std::vector<char> loadFileToVector( std::string filename );
+//std::vector<char> loadFileToVector( std::string filename );
+//std::string loadFileToString( std::string filename );
 
 void saveVectorToFile( std::vector<char> data, std::string filename );
 
@@ -75,6 +82,7 @@ int main( int argc, char *argv[] ) {
     else if ( command.find( "EXIT" ) == 0 ) {
       return 0;
     }
+    bzero( cmd, 256 );
   }
 }
 
@@ -169,14 +177,12 @@ int connectToServer( int i ) {
   // init socket
   struct sockaddr_in server;
   int newSock;
-
   newSock = socket( AF_INET, SOCK_STREAM, 0 );
   if ( newSock == -1 ) {
     char err[MSG_SIZE];
     sprintf( err, "Sock not created for %d. Error", i );
     perror( err );
   }
-  puts( "Socket created" );
 
   // Add a 1 second timeout
   struct timeval timeout;
@@ -214,71 +220,83 @@ int connectToServer( int i ) {
   return newSock;
 }
 
-void sendRequest( std::string request, int sock ) {
-  ssize_t send_size;
-  size_t file_read_size = request.length();
-  unsigned char *pbuf = ( unsigned char * ) request.c_str();
-  printf( "Client sending (%s), sizeof(%ld), strlen(%ld), length(%ld)\n",
-          request.c_str(),
-          file_read_size,
-          strlen( request.c_str() ),
-          request.length() );
-  while ( file_read_size > 0 ) {
-    send_size = send( sock, pbuf, file_read_size, 0 );
-    printf( "Client sent size(%ld), pbuf(%*s)\n", send_size, ( int ) send_size, pbuf );
+/**
+ *  Send the char* request to a remote server via socket
+ *
+ * @param request
+ * @param request_size
+ * @param sock - File descriptor pointing to a connected socket
+ */
+void sendRequest( unsigned char *request, size_t request_size, int sock ) {
+  unsigned char *send_buffer = request;
+
+  while ( request_size > 0 ) {
+    ssize_t send_size = send( sock, send_buffer, request_size, 0 );
+    printf( "Client sent size(%ld), send_buffer(%*s)\n", send_size, ( int ) send_size, send_buffer );
+    printf( "In hex:\n" );
+    for ( int i = 0; i < request_size; i++ ) {
+      printf( "%02X", send_buffer[ i ] );
+    }
+    printf( "\n" );
+
     if ( send_size < 0 ) {
       perror( "Error sending get body" );
     }
-    pbuf += send_size;
-    file_read_size -= send_size;
+    send_buffer += send_size;
+    request_size -= send_size;
   }
 }
 
-std::string getResponse( int sock ) {
+Response getResponse( int sock ) {
   char client_message[MSG_SIZE];
   bzero( client_message, MSG_SIZE );
   ssize_t read_size;
-  std::string ret = "";
+  Response response = Response();
 
   read_size = recv( sock, client_message, MSG_SIZE, 0 );
-
-  while ( read_size > 0 ) {
-    ret.append( client_message );
-    bzero( client_message, MSG_SIZE );
-    read_size = recv( sock, client_message, MSG_SIZE, 0 );
-  }
-
   if ( read_size == -1 ) {
     perror( "recv failed" );
   }
 
-  return ret;
+  response.header = client_message;
+  printf( "Client got header: %s\n", response.header.c_str() );
+
+  if ( response.header.find( "ERROR" ) != 0 ) {
+    send( sock, "ACK", 4, 0 );
+    read_size = recv( sock, client_message, MSG_SIZE, 0 );
+    while ( read_size > 0 ) {
+      response.body.insert( response.body.end(), client_message, client_message + read_size );
+      bzero( client_message, MSG_SIZE );
+      read_size = recv( sock, client_message, MSG_SIZE, 0 );
+    }
+
+    if ( read_size == -1 ) {
+      perror( "recv failed" );
+    }
+  }
+
+  return response;
 }
 
 void handleList( std::string command ) {
   printf( "handling list\n" );
 
-  int sock;
+  int sock = -1;
   std::string request;
-  std::string pieces[4];
-//  std::string response;
+  Response responses[4];
 
-  request = "LIST ";
-  request.append( config.username );
-  request.append( ":" );
-  request.append( config.password );
-  request.append( command.substr( command.find( " " ), command.length() - command.find( " " ) ) );
+  request = "LIST " + config.username + ":" + config.password +
+            command.substr( command.find( " " ), command.length() - command.find( " " ) - 1 );
 
-  printf( "LIST SENT: %s\n", request.c_str() );
   for ( int i = 0; i < 4; i++ ) {
     sock = connectToServer( i );
     if ( sock != -1 ) {
-      sendRequest( request, sock );
-      pieces[ i ] = getResponse( sock );
-      printf( "LIST RECVD: %s\n", pieces[ i ].c_str() );
+      printf( "LIST SENT: %s\n", request.c_str() );
+      sendRequest( ( unsigned char * ) request.c_str(), request.length(), sock );
+      responses[ i ] = getResponse( sock );
+      printf( "LIST RECVD: %s\n", responses[ i ].body.data() );
     }
   }
-
   // TODO: reconstruct full list with incomplete warnings
   closeSocket( sock );
 }
@@ -287,15 +305,12 @@ void handleGet( std::string command ) {
   printf( "handling get\n" );
 
   int sock;
-  std::string pieces[4];
+  Response responses[4];
 
   std::string request;
   std::string filename;
 
-  request = "GET ";
-  request.append( config.username );
-  request.append( ":" );
-  request.append( config.password );
+  request = "GET " + config.username + ":" + config.password;
 
   uint64_t fnStart, fnLength, pathStart, pathLength;
   fnStart = command.find( " " ) + 1;
@@ -303,40 +318,50 @@ void handleGet( std::string command ) {
   if ( pathStart != fnStart ) {
     fnLength = pathStart - fnStart - 1;
     pathLength = command.length() - pathStart;
-    request.append( " " );
-    request.append( command.substr( pathStart, pathLength ) );
-    request.append( " " );
+    request += " " + command.substr( pathStart, pathLength ) + " ";
     filename = command.substr( fnStart, fnLength );
-    request.append( command.substr( fnStart, fnLength ) );
+    request += filename;
   }
   else {
     filename = command.substr( fnStart, command.length() - command.find( " " ) );
-    request.append( filename );
+    request += filename;
   }
 
-  request.append( " p" );
+  request += " p";
 
+  // Request primary piece
   for ( int i = 0; i < 4; i++ ) {
     sock = connectToServer( i );
     if ( sock != -1 ) {
-      sendRequest( request, sock );
-      pieces[ i ] = getResponse( sock );
+      sendRequest( ( unsigned char * ) request.c_str(), request.length(), sock );
+      responses[ i ] = getResponse( sock );
     }
     closeSocket( sock );
   }
 
+  // Request secondary piece for any missing pieces.
+  // Print error and bail if secondary piece is not found.
+  request = request.substr( 0, request.length() - 2 ) + " s";
   for ( int i = 0; i < 4; i++ ) {
-    if ( pieces[ i ].find( "ERROR" ) == 0 ) {
-      request = request.substr( 0, request.length() - 2 );
-      request.append( " s" );
-      sock = connectToServer( i );
-      if ( sock != -1 ) {
-        sendRequest( request, sock );
-        pieces[ i ] = getResponse( sock );
+    if ( responses[ i ].header.find( "ERROR" ) == 0 ) {
+      for ( int j = 0; j < 4; j++ ) {
+        if ( j != i ) {
+          sock = connectToServer( j );
+          if ( sock != -1 ) {
+            sendRequest( ( unsigned char * ) request.c_str(), request.length(), sock );
+            responses[ i ] = getResponse( sock );
+          }
+          closeSocket( sock );
+        }
+
+        // If we found the secondary piece, stop looking
+        if ( responses[ i ].header.find( "ERROR" ) != 0 ) {
+          j = 5;
+        }
       }
-      closeSocket( sock );
     }
-    if ( pieces[ i ].find( "ERROR" ) == 0 ) {
+
+    if ( responses[ i ].header.find( "ERROR" ) == 0 ) {
       printf( "File is incomplete.\n" );
       return;
     }
@@ -353,63 +378,149 @@ void handleGet( std::string command ) {
 
 void handlePut( std::string command ) {
   printf( "handling put\n" );
-
-  std::string request;
   std::string filename;
+  std::string path;
 
-  request = "PUT ";
-  request.append( config.username );
-  request.append( ":" );
-  request.append( config.password );
+  // Write authentication parameter to the request
+  std::string request = "PUT " + config.username + ":" + config.password;
 
-  uint64_t fnStart, fnLength, pathStart, pathLength;
-  fnStart = command.find( " " ) + 1;
-  pathStart = command.rfind( " " ) + 1;
-  if ( pathStart != fnStart ) {
-    fnLength = pathStart - fnStart - 1;
-    pathLength = command.length() - pathStart;
-    request.append( " " );
-    request.append( command.substr( pathStart, pathLength ) );
-    request.append( " " );
-    filename = command.substr( fnStart, fnLength );
-    request.append( command.substr( fnStart, fnLength ) );
+  // Extract the filename and path from the command
+  uint64_t filenameStartIndex, filenameLength, pathStartIndex, pathLength;
+
+  // Look for starting indices
+  // Filename is the first parameter, look for the first whitespace
+  filenameStartIndex = command.find( " " ) + 1;
+  // Path is the second parameter, we look for the last whitespace
+  pathStartIndex = command.rfind( " " ) + 1;
+
+  // We found a path (optional)
+  if ( pathStartIndex != filenameStartIndex ) {
+    filenameLength = pathStartIndex - filenameStartIndex - 1;
+    pathLength = command.length() - pathStartIndex;
+    path = command.substr( pathStartIndex, pathLength ) + " ";
+    filename = command.substr( filenameStartIndex, filenameLength );
   }
+    // We did not find a path
   else {
-    filename = command.substr( fnStart, command.length() - command.find( " " ) );
-    request.append( filename );
+    path = "/";
+    filename = command.substr( filenameStartIndex, command.length() - command.find( " " ) );
   }
 
-  request.append( " p" );
+  // If the last character of the filename is a newline, remove it.
+  if ( filename[ filename.length() - 1 ] == '\n' ) {
+    filename.pop_back();
+  }
 
+  // Add path and filename to PUT request string
+  request += " " + path + " " + filename;
+
+  // Get the starting server index based on MD5 hash and encrypt the file using linux aes
   int bin = getBinForFile( filename );
-  encryptFile( filename );
-  //TODO: read .filename into memory and break the data into 4 pieces
 
-  int sock;
-  for ( int i = 0; i < 4; i++ ) {
-    sock = connectToServer( i );
-    if ( sock != -1 ) {
-      //TODO: connect to servers and send pieces
-    }
-    closeSocket( sock );
+  // TODO: reimplement this once sending text and binary works
+  encryptFile( filename );
+  filename = "." + filename;
+
+  // Open the file, if it exists
+  FILE *filePointer = NULL;
+  if ( ( filePointer = fopen( filename.c_str(), "rb" ) ) == NULL ) {
+    perror( "Could not open specified file" );
+    return;
   }
 
-  // TODO: delete .filename
+  // Get the size of the file and the size of the file pieces
+  long startingFilePosition;
+  long fileSize;
+  size_t filePieceLength;
+  fseek( filePointer, 0, SEEK_END );
+  fileSize = ftell( filePointer );
+  fseek( filePointer, 0, SEEK_SET );
+  filePieceLength = ( size_t ) ceil( ( ( double ) fileSize ) / 4.0 );
+  printf( "Found fileSize(%ld), fileSize/4(%ld), ceil(%lf) filePieceLength(%ld)\n",
+          fileSize, fileSize / 4, ceil( fileSize / 4 ), filePieceLength );
+
+  // Allocate memory for the file and read it
+  unsigned char *fileBuffer = new unsigned char[fileSize];
+  fread( fileBuffer, fileSize, 1, filePointer );
+  unsigned char *filePieceBuffer = fileBuffer;
+
+  // Print file in hex for debugging
+  printf( "Read file into memory:\n" );
+  for ( int i = 0; i < fileSize; i++ ) {
+    printf( "%02X", fileBuffer[ i ] );
+  }
+  printf( "\n" );
+
+  size_t fileSizeSent = 0;
+  for ( int i = 0; i < 4; i++ ) {
+    printf( "primaryServer(%d), fileSizeSent(%ld), filePieceLength(%ld), fileSize(%ld)\n", ( i + bin ) % 4,
+            fileSizeSent, filePieceLength, fileSize );
+    std::string pieceNumberString = std::to_string( i ) + "\n";
+
+    // Send the piece to the first server
+    int primarySock = connectToServer( ( i + bin ) % 4 );
+    if ( primarySock != -1 ) {
+      std::string primaryRequest = request + " p " + pieceNumberString;
+      // Send the header
+      sendRequest( ( unsigned char * ) primaryRequest.c_str(), primaryRequest.length(), primarySock );
+      // Send the data
+      sendRequest( filePieceBuffer, filePieceLength, primarySock );
+      send( primarySock, "", 0, 0 );
+    }
+    closeSocket( primarySock );
+
+    // Send the piece to the backup server
+    int secondarySock = connectToServer( ( i + bin + 1 ) % 4 );
+    if ( secondarySock != -1 ) {
+      std::string secondaryRequest = request + " s " + pieceNumberString;
+      // Send the header
+      sendRequest( ( unsigned char * ) secondaryRequest.c_str(), secondaryRequest.length(), secondarySock );
+      // Send the data
+      sendRequest( filePieceBuffer, filePieceLength, secondarySock );
+      send( secondarySock, "", 0, 0 );
+    }
+    closeSocket( secondarySock );
+
+    // Move the buffer forward filePieceLength
+    fileSizeSent += filePieceLength;
+    filePieceBuffer += filePieceLength;
+
+    // Adjust the size for the last piece, if less than filePieceLength
+    if ( fileSizeSent + filePieceLength >= fileSize ) {
+      filePieceLength = fileSize - fileSizeSent;
+    }
+  }
+
+//  TODO: readd this after implementing encryption
+//  remove( ( filename ).c_str() );
+
+  // Clean up the file
+  delete[]fileBuffer;
+  fclose( filePointer );
 }
 
 //TODO:: add handleMkdir()
 
-std::vector<char> loadFileToVector( std::string filename ) {
-  std::ifstream ifs( filename );
-  if ( !ifs ) {
-    perror( "Could not open file:" );
-  }
+//std::vector<char> loadFileToVector( std::string filename ) {
+//  std::ifstream ifs( filename.c_str() );
+//  if ( !ifs ) {
+//    perror( "Could not open file:" );
+//    return *( new std::vector<char>() );
+//  }
+//  else {
+//    return std::vector<char>( std::istreambuf_iterator<char>( ifs ), std::istreambuf_iterator<char>() );
+//  }
+//}
 
-  return std::vector<char>( std::istreambuf_iterator<char>( ifs ), std::istreambuf_iterator<char>() );
-}
+//std::string loadFileToString( std::string filename ) {
+//  std::ifstream ifs( filename.c_str(), std::ios::binary );
+//  std::string ret( ( std::istreambuf_iterator<char>( ifs ) ), std::istreambuf_iterator<char>() );
+//  return ret;
+//}
 
 void saveVectorToFile( std::vector<char> data, std::string filename ) {
-  //Save data to filename
+  std::ofstream ofs( filename, std::ios::out | std::ofstream::binary );
+  std::copy( data.begin(), data.end(), std::ostreambuf_iterator<char>( ofs ) );
 }
 
 int getBinForFile( std::string filename ) {
@@ -432,11 +543,7 @@ int getBinForFile( std::string filename ) {
 
 void encryptFile( std::string filename ) {
   // encrypt the file in tempfile .filename
-  std::string command = "openssl aes-256-cbc -salt -in ";
-  command.append( filename );
-  command.append( " -out ." );
-  command.append( filename );
-  command.append( " -pass file:enc.key" );
+  std::string command = "openssl aes-256-cbc -salt -in " + filename + " -out ." + filename + " -pass file:enc.key";
 
   // run the command
   FILE *fp = popen( command.c_str(), "r" );
@@ -448,11 +555,7 @@ void encryptFile( std::string filename ) {
 
 void decryptFile( std::string filename ) {
   // encrypt the file in tempfile .filename
-  std::string command = "openssl aes-256-cbc -d -in ."
-  command.append( filename );
-  command.append( " -out ";
-  command.append( filename );
-  command.append( " -pass file:enc.key" );
+  std::string command = "openssl aes-256-cbc -d -in ." + filename + " -out " + filename + " -pass file:enc.key";
   FILE *fp = popen( command.c_str(), "r" );
   if ( fp == NULL ) {
     perror( "Problem running decryptFile:" );

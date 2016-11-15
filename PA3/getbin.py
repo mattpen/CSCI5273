@@ -8,10 +8,10 @@
 import hashlib
 import sys
 
-if len(sys.argv) == 2:
-    data = open(sys.argv[1], "rb").read()
+if len( sys.argv ) == 2:
+    data = open( sys.argv[1], "rb" ).read()
     hash = hashlib.md5()
-    hash.update(data)
+    hash.update( data )
     digest = hash.hexdigest()
-    sum = int(digest, 16)
-    print(sum % 4)
+    sum = int( digest, 16 )
+    print( sum % 4 )

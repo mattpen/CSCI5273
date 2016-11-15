@@ -16,6 +16,7 @@
 #include <thread>
 #include <iostream>
 #include <vector>
+#include <sys/stat.h>
 
 struct Request {
     std::string method;
@@ -24,9 +25,14 @@ struct Request {
     char rank;
     std::string path;
     std::string filename;
-    std::string data;
+    std::vector<unsigned char> data;
     std::string error;
     int pieceNumber;
+};
+
+struct Response {
+    std::string header;
+    std::vector<char> body;
 };
 
 std::unordered_map<std::string, std::string> userPasswordMap;
@@ -45,37 +51,37 @@ void closeSocket( int fd );
 //the thread function
 void *requestCycle( void * );
 
-// Read request into string from socket
-std::string getRequest( int sock );
-
 // Read request string and populate a Request object
-Request parseRequest( std::string requestString );
+Request parseRequest( std::vector<unsigned char> requestString );
+
+// Read request into string from socket
+std::vector<unsigned char> getRequest( int sock );
 
 // Write response string to socket
-void sendResponse( int sock, std::string response );
-
-std::string handleListResponse( Request request );
-
-std::string handleGetResponse( Request request );
-
-std::string handlePutResponse( Request request );
-
-void initAuthentication();
+void sendResponse( int sock, Response response );
 
 std::vector<char> loadFileToVector( std::string filename );
 
 void saveVectorToFile( std::vector<char> data, std::string filename );
 
+Response handleListResponse( Request request );
+
+Response handleGetResponse( Request request );
+
+Response handlePutResponse( Request request );
+
+Response handleMkdirResponse( Request request );
+
+void initAuthentication();
+
 int main( int argc, char *argv[] ) {
+  setbuf( stdout, NULL );
   if ( argc < 3 ) {
     printf( "USAGE: <root_directory> <server_port>\n" );
     exit( 1 );
   }
   directory = argv[ 1 ];
-
-
   thread_count = 0;
-
   initAuthentication();
 
   // Socket values
@@ -87,7 +93,6 @@ int main( int argc, char *argv[] ) {
   if ( socket_desc == -1 ) {
     printf( "Could not create socket" );
   }
-  puts( "Socket created" );
 
   // Allow server to reuse port/addr if in TIME_WAIT state
   int enable = 1;
@@ -106,7 +111,6 @@ int main( int argc, char *argv[] ) {
     perror( "bind failed. Error" );
     return 1;
   }
-  puts( "bind done" );
 
   //Listen
   listen( socket_desc, 3 );
@@ -148,14 +152,24 @@ void *requestCycle( void *socket_desc ) {
   //Get the socket descriptor
   int sock = *( int * ) socket_desc;
 
+//  // Add a 1 second timeout
+//  struct timeval timeout;
+//  timeout.tv_sec = 1;
+//  timeout.tv_usec = 0;
+//  if ( setsockopt( sock, SOL_SOCKET, SO_RCVTIMEO, ( char * ) &timeout, sizeof( timeout ) ) < 0 ) {
+//    char err[MSG_SIZE];
+//    sprintf( err, "setsockopt(SO_RCVTIMEO) failed for server(%s). Error", directory.c_str() );
+//    perror( err );
+//  }
 
   Request request;
   printf( "Server (%s) received a request.\n", directory.c_str() );
-  std::string response;
+  Response response = Response();
 
   request = parseRequest( getRequest( sock ) );
 
   if ( request.error.compare( "" ) == 0 ) {
+    printf( "Server(%s) did not error and is handling method(%s)\n", directory.c_str(), request.method.c_str() );
     if ( request.method.compare( "LIST" ) == 0 ) {
       response = handleListResponse( request );
     }
@@ -165,11 +179,16 @@ void *requestCycle( void *socket_desc ) {
     else if ( request.method.compare( "PUT" ) == 0 ) {
       response = handlePutResponse( request );
     }
-    response.insert( 0, "SUCCESS " );
+    else if ( request.method.compare( "MKDIR" ) == 0 ) {
+      response = handleMkdirResponse( request );
+    }
+    printf( "Server(%s) finished handling method(%s)\n", directory.c_str(), request.method.c_str() );
+
   }
   else {
+    printf( "Server(%s) had an error(%s)", directory.c_str(), request.error.c_str() );
     request.error.insert( 0, "ERROR " );
-    response = request.error;
+    response.header = request.error;
   }
 
   sendResponse( sock, response );
@@ -180,58 +199,110 @@ void *requestCycle( void *socket_desc ) {
   return 0;
 }
 
+Response handleMkdirResponse( Request request ) {
+  Response response = Response();
+  std::string fullPath = "." + directory + "/" + request.path;
+  mkdir( fullPath.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH );
 
-std::string getRequest( int sock ) {
-  char client_message[MSG_SIZE];
-  bzero( client_message, MSG_SIZE );
+  return response;
+}
+
+
+std::vector<unsigned char> getRequest( int sock ) {
+  unsigned char clientMessage[MSG_SIZE];
+  bzero( clientMessage, MSG_SIZE );
   ssize_t read_size;
-  std::string ret = "";
+  std::vector<unsigned char> request = std::vector<unsigned char>();
 
-  read_size = recv( sock, client_message, MSG_SIZE, 0 );
-  ret.append( client_message );
-
-
-  if ( read_size == MSG_SIZE ) {
-    while ( read_size > 0 && read_size == MSG_SIZE ) {
-      ret.append( client_message );
-      bzero( client_message, MSG_SIZE );
-      read_size = recv( sock, client_message, MSG_SIZE, 0 );
-    }
-  }
+  read_size = recv( sock, clientMessage, MSG_SIZE, 0 );
 
   if ( read_size == -1 ) {
-    ret = "EXIT";
+    char err[6] = "ERROR";
+    printf( "Server (%s) recv error", directory.c_str() );
+    request.insert( request.begin(), err, err + 5 );
     perror( "recv failed" );
+    return request;
   }
-  printf( "getRequest server(%s) size(%ld): %s\n", directory.c_str(), read_size, ret.c_str() );
-  return ret;
-}
 
-void sendResponse( int sock, std::string response ) {
-  ssize_t send_size;
-  size_t file_read_size = strlen( response.c_str() );
-  unsigned char *pbuf = ( unsigned char * ) response.c_str();
-
-  while ( file_read_size > 0 ) {
-    send_size = send( sock, pbuf, file_read_size, 0 );
-    if ( send_size < 0 ) {
-      perror( "Error sending get body" );
+  while ( read_size > 0 ) {
+    printf( "Server(%s) Read buffer from sock(%d):\n", directory.c_str(), sock );
+    for ( int i = 0; i < read_size; i++ ) {
+      printf( "%02X", clientMessage[ i ] );
     }
-    pbuf += send_size;
-    file_read_size -= send_size;
+    printf( "\n" );
+
+    request.insert( request.end(), clientMessage, clientMessage + read_size );
+    printf( "Server(%s) read_size = %ld\n", directory.c_str(), read_size );
+
+    bzero( clientMessage, MSG_SIZE );
+    read_size = recv( sock, clientMessage, MSG_SIZE, 0 );
+  }
+
+  printf( "Server(%s) read vector.data: %s\n", directory.c_str(), request.data() );
+  return request;
+}
+
+void sendResponse( int sock, Response response ) {
+  // Send header
+  send( sock, response.header.c_str(), response.header.length(), 0 );
+
+  if ( response.header.find( "ERROR" ) != 0 ) {
+    char buf[4];
+    recv( sock, buf, 4, 0 );
+
+    if ( strcmp( buf, "ACK" ) == 0 ) {
+      // Send if we did not send an error and we recvd an ACK
+      size_t file_read_size = response.body.size();
+      if ( file_read_size > 0 ) {
+        unsigned char *pbuf = ( unsigned char * ) response.body.data();
+
+        ssize_t send_size;
+        while ( file_read_size > 0 ) {
+          send_size = send( sock, pbuf, file_read_size, 0 );
+          if ( send_size < 0 ) {
+            perror( "Error sending get body" );
+          }
+          pbuf += send_size;
+          file_read_size -= send_size;
+        }
+      }
+    }
   }
 }
 
-//TODO: implement "MKDIR" request
-Request parseRequest( std::string requestString ) {
-  Request request;
+std::vector<char> loadFileToVector( std::string filename ) {
+  std::ifstream ifs( filename );
+  if ( !ifs ) {
+    perror( "Could not open file:" );
+    return *( new std::vector<char>() );
+  }
+  else {
+    return std::vector<char>( std::istreambuf_iterator<char>( ifs ), std::istreambuf_iterator<char>() );
+  }
+}
+
+void saveVectorToFile( std::vector<unsigned char> data, std::string filename ) {
+  printf( "Server (%s) writing data(%s) to file(%s)\n", directory.c_str(), data.data(), filename.c_str() );
+  std::ofstream ofs( filename, std::ios::out | std::ofstream::binary );
+  std::copy( data.begin(), data.end(), std::ostreambuf_iterator<char>( ofs ) );
+  ofs.close();
+}
+
+Request parseRequest( std::vector<unsigned char> requestData ) {
+  std::string requestString;
+  int requestEndIndex = 0;
+  while ( requestEndIndex < requestData.size() && requestData[ requestEndIndex ] != '\n' ) {
+    requestString.push_back( requestData[ requestEndIndex ] );
+    requestEndIndex++;
+  }
+
+  Request request = Request();
   request.method = "";
   request.username = "";
   request.password = "";
   request.rank = '\0';
   request.path = "";
   request.filename = "";
-  request.data = "";
   request.error = "";
   request.pieceNumber = -1;
 
@@ -253,7 +324,8 @@ Request parseRequest( std::string requestString ) {
   // Validate method
   if ( !( request.method.compare( "GET" ) == 0
           || request.method.compare( "LIST" ) == 0
-          || request.method.compare( "PUT" ) == 0 ) ) {
+          || request.method.compare( "PUT" ) == 0
+          || request.method.compare( "MKDIR" ) == 0 ) ) {
 
     request.error = "UNSUPPORTED_METHOD";
     return request;
@@ -283,30 +355,47 @@ Request parseRequest( std::string requestString ) {
 
   start = end + 1;
   end = requestString.find( " ", start );
+
   // validate path token or return list with empty path
   if ( ( end <= start ) ) {
-    if ( request.method.compare( "LIST" ) != 0 ) {
-      request.error = "BAD_PATH_TOKEN";
-    }
+    request.error = "BAD_PATH_TOKEN";
     return request;
   }
+  printf( "Looking for path in (%ld,%ld)\n", end, start );
   request.path = requestString.substr( start, end - start );
+  if ( request.path[ request.path.length() - 1 ] == '\n' ) {
+    // Strip any tailing newline
+    request.path = request.path.substr( 0, request.path.length() - 1 );
+  }
   printf( "Server %s parsing request. Found path=:%s:\n", directory.c_str(), request.path.c_str() );
 
+  // User should not be able to view parent directory!
+  if ( request.path.find( ".." ) != std::string::npos ) {
+    request.error = "BAD_PATH_TOKEN";
+    return request;
+  }
+
   // We have enough info for list, stop processing
-  if ( request.method.compare( "LIST" ) == 0 ) {
+  if ( request.method.compare( "LIST" ) == 0 || request.method.compare( "MKDIR" ) == 0 ) {
     return request;
   }
 
   start = end + 1;
   end = requestString.find( " ", start );
   // validate path token or return list with empty path
-  if ( ( end <= start ) ) {
+  if ( end <= start ) {
     request.error = "BAD_FILENAME_TOKEN";
     return request;
   }
   request.filename = requestString.substr( start, end - start );
+
   printf( "Server %s parsing request. Found filename=:%s:\n", directory.c_str(), request.filename.c_str() );
+
+  // User should not be able to view parent directory!
+  if ( request.filename.find( ".." ) != std::string::npos ) {
+    request.error = "BAD_FILENAME_TOKEN";
+    return request;
+  }
 
   start = end + 1;
   // Validate rank token
@@ -314,7 +403,7 @@ Request parseRequest( std::string requestString ) {
     request.error = "BAD_RANK_TOKEN";
     return request;
   }
-  request.rank = requestString[ start ] == 'p';
+  request.rank = requestString[ start ];
   printf( "Server %s parsing request. Found rank=:%c:\n", directory.c_str(), request.rank );
 
 
@@ -329,54 +418,73 @@ Request parseRequest( std::string requestString ) {
   }
 
   request.pieceNumber = std::stoi( requestString.substr( start, 1 ) );
-  if ( request.pieceNumber < 1 || request.pieceNumber > 4 ) {
+  printf( "Server %s parsing request. Found piece#=:%d:\n", directory.c_str(), request.pieceNumber );
+  if ( request.pieceNumber < 0 || request.pieceNumber > 3 ) {
     request.error = "BAD_PIECE_TOKEN";
     return request;
   }
 
-  start += 2;
-  // Validate data token
-  if ( start >= requestString.length() ) {
-    request.error = "EMPTY_PUT_REQUEST";
-    return request;
+  if ( request.method.compare( "PUT" ) == 0 ) {
+    for ( int i = 0; i < requestData.size() - requestEndIndex - 1; i++ ) {
+      request.data.push_back( requestData[ i + requestEndIndex + 1 ] );
+    }
   }
-  request.data = requestString.substr( start, requestString.length() - start );
-  printf( "Server %s parsing request. Found data=:%s:\n", directory.c_str(), request.data.c_str() );
+
   return request;
 }
 
 
-std::string handleListResponse( Request request ) {
+Response handleListResponse( Request request ) {
+  Response response;
   // ls the directory using system calls
   std::string command = "/bin/ls .";
   command.append( directory );
   command.append( request.path );
   FILE *fp = popen( command.c_str(), "r" );
   if ( fp == NULL ) {
-    return "";
+    response.header = "ERROR";
+    response.body = *( new std::vector<char>() );
+    return response;
   }
 
   // Store the output of the ls command in a response
-  std::string response = "";
+  std::string output = "";
   char buf[MSG_SIZE];
   while ( fgets( buf, sizeof( buf ) - 1, fp ) != NULL ) {
-    response.append( buf );
+    output.append( buf );
   }
+  response.body = *( new std::vector<char>( output.begin(), output.end() ) );
+  response.header = "SUCCESS";
 
   /* close file */
   pclose( fp );
   return response;
 }
 
-std::string handleGetResponse( Request request ) {
-  // TODO: parse filename and directory from request.path. Look for /directory/.filename.N.R, where N is any number 1-4 and R = request.rank
-  // TODO: Insert "SUCCESS {PIECE}.{RANK} LENGTH\n" to the beginning of the response
-  return request.method;
+Response handleGetResponse( Request request ) {
+  Response response;
+  std::string localFilename =
+    directory + "/." + request.path + "/" + request.filename
+    + "." + std::to_string( request.pieceNumber ) + "." + request.rank;
+  response.body = loadFileToVector( localFilename );
+  if ( response.body.size() > 0 ) {
+    response.header = "SUCCESS " + localFilename + " " + std::to_string( response.body.size() );
+  }
+  else {
+    response.header = "ERROR: FILE NOT FOUND";
+  }
+  return response;
 }
 
-std::string handlePutResponse( Request request ) {
-  // TODO:  parse filename and directory from request.path. replace/create a file called /directory/.request.path.N.R with request.data where N = request.pieceNumber and R = request.rank
-  return request.method;
+Response handlePutResponse( Request request ) {
+  printf( "Server (%s) handling put", directory.c_str() );
+  Response response;
+  std::string localFilename =
+    "." + directory + request.path + "." + request.filename
+    + "." + std::to_string( request.pieceNumber ) + "." + request.rank;
+  saveVectorToFile( request.data, localFilename );
+  response.header = "SUCCESS";
+  return response;
 }
 
 // TODO: handleMkdirResponse( Request request )
@@ -413,19 +521,6 @@ void initAuthentication() {
   }
 
   return;
-}
-
-std::vector<char> loadFileToVector( std::string filename ) {
-  std::ifstream ifs( filename );
-  if ( !ifs ) {
-    perror( "Could not open file:" );
-  }
-
-  return std::vector<char>( std::istreambuf_iterator<char>( ifs ), std::istreambuf_iterator<char>() );
-}
-
-void saveVectorToFile( std::vector<char> data, std::string filename ) {
-
 }
 
 // Reused from http://stackoverflow.com/a/12730776/2496827
