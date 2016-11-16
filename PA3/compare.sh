@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 
 echo 'original:'
-#xxd .w.jpg
+#xxd .testfile
 echo 'primary:'
-#xxd */.w.jpg.0.p ; xxd */.w.jpg.1.p; xxd */.w.jpg.2.p; xxd */.w.jpg.3.p; echo ''
+#xxd */.testfile.0.p ; xxd */.testfile.1.p; xxd */.testfile.2.p; xxd */.testfile.3.p; echo ''
 
 
-cat */.w.jpg.0.p > newtestp.jpg
-cat */.w.jpg.1.p >> newtestp.jpg
-cat */.w.jpg.2.p >> newtestp.jpg
-cat */.w.jpg.3.p >> newtestp.jpg
+cat */.testfile.0.p > newtestp.jpg
+cat */.testfile.1.p >> newtestp.jpg
+cat */.testfile.2.p >> newtestp.jpg
+cat */.testfile.3.p >> newtestp.jpg
 #xxd newtestp.jpg
 
 echo 'secondary:'
-#xxd */.w.jpg.0.s ; xxd */.w.jpg.1.s; xxd */.w.jpg.2.s; xxd */.w.jpg.3.s; echo ''
+#xxd */.testfile.0.s ; xxd */.testfile.1.s; xxd */.testfile.2.s; xxd */.testfile.3.s; echo ''
 
-cat */.w.jpg.0.s > newtests.jpg;
-cat */.w.jpg.1.s >> newtests.jpg;
-cat */.w.jpg.2.s >> newtests.jpg;
-cat */.w.jpg.3.s >> newtests.jpg;
+cat */.testfile.0.s > newtests.jpg;
+cat */.testfile.1.s >> newtests.jpg;
+cat */.testfile.2.s >> newtests.jpg;
+cat */.testfile.3.s >> newtests.jpg;
 #xxd newtests.jpg

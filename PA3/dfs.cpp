@@ -32,7 +32,7 @@ struct Request {
 
 struct Response {
     std::string header;
-    std::vector<char> body;
+    std::vector<unsigned char> body;
 };
 
 std::unordered_map<std::string, std::string> userPasswordMap;
@@ -58,17 +58,17 @@ Request parseRequest( std::vector<unsigned char> requestString );
 std::vector<unsigned char> getRequest( int sock );
 
 // Write response string to socket
-void sendResponse( int sock, Response response );
+void sendResponse( unsigned char *request, size_t request_size, int sock );
 
-std::vector<char> loadFileToVector( std::string filename );
+std::vector<unsigned char> loadFileToVector( std::string filename );
 
-void saveVectorToFile( std::vector<char> data, std::string filename );
+void saveVectorToFile( std::vector<unsigned char> data, std::string filename );
 
-Response handleListResponse( Request request );
+void handleListResponse( Request request, int sock );
 
 Response handleGetResponse( Request request );
 
-Response handlePutResponse( Request request );
+void handlePutResponse( Request request );
 
 Response handleMkdirResponse( Request request );
 
@@ -152,16 +152,6 @@ void *requestCycle( void *socket_desc ) {
   //Get the socket descriptor
   int sock = *( int * ) socket_desc;
 
-//  // Add a 1 second timeout
-//  struct timeval timeout;
-//  timeout.tv_sec = 1;
-//  timeout.tv_usec = 0;
-//  if ( setsockopt( sock, SOL_SOCKET, SO_RCVTIMEO, ( char * ) &timeout, sizeof( timeout ) ) < 0 ) {
-//    char err[MSG_SIZE];
-//    sprintf( err, "setsockopt(SO_RCVTIMEO) failed for server(%s). Error", directory.c_str() );
-//    perror( err );
-//  }
-
   Request request;
   printf( "Server (%s) received a request.\n", directory.c_str() );
   Response response = Response();
@@ -171,16 +161,16 @@ void *requestCycle( void *socket_desc ) {
   if ( request.error.compare( "" ) == 0 ) {
     printf( "Server(%s) did not error and is handling method(%s)\n", directory.c_str(), request.method.c_str() );
     if ( request.method.compare( "LIST" ) == 0 ) {
-      response = handleListResponse( request );
+      handleListResponse( request, sock );
     }
     else if ( request.method.compare( "GET" ) == 0 ) {
-      response = handleGetResponse( request );
+//      handleGetResponse( request, sock );
     }
     else if ( request.method.compare( "PUT" ) == 0 ) {
-      response = handlePutResponse( request );
+      handlePutResponse( request );
     }
     else if ( request.method.compare( "MKDIR" ) == 0 ) {
-      response = handleMkdirResponse( request );
+//      handleMkdirResponse( request, sock );
     }
     printf( "Server(%s) finished handling method(%s)\n", directory.c_str(), request.method.c_str() );
 
@@ -191,7 +181,7 @@ void *requestCycle( void *socket_desc ) {
     response.header = request.error;
   }
 
-  sendResponse( sock, response );
+//  sendResponse( sock, response );
   closeSocket( sock );
   free( socket_desc );
 
@@ -202,82 +192,94 @@ void *requestCycle( void *socket_desc ) {
 Response handleMkdirResponse( Request request ) {
   Response response = Response();
   std::string fullPath = "." + directory + "/" + request.path;
-  mkdir( fullPath.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH );
-
+  if ( mkdir( fullPath.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH ) == 0 ) {
+    response.header = "SUCCESS";
+  }
+  else {
+    response.header = "ERROR: " + std::to_string( errno );
+  }
   return response;
+}
+
+
+/**
+ *  Send the char* request to a remote server via socket
+ *
+ * @param request
+ * @param request_size
+ * @param sock - File descriptor pointing to a connected socket
+ */
+void sendResponse( unsigned char *request, size_t request_size, int sock ) {
+  std::string sizeString = std::to_string( request_size );
+  while ( sizeString.length() < 16 ) {
+    sizeString = " " + sizeString;
+  }
+  send( sock, sizeString.c_str(), 16, 0 );
+
+  unsigned char *send_buffer = request;
+
+  while ( request_size > 0 ) {
+    ssize_t send_size = send( sock, send_buffer, request_size, 0 );
+    printf( "Client sent size(%ld), send_buffer(%*s)\n", send_size, ( int ) send_size, send_buffer );
+    printf( "In hex:\n" );
+    for ( int i = 0; i < request_size; i++ ) {
+      printf( "%02X", send_buffer[ i ] );
+    }
+    printf( "\n" );
+
+    if ( send_size < 0 ) {
+      perror( "Error sending get body" );
+    }
+    send_buffer += send_size;
+    request_size -= send_size;
+  }
 }
 
 
 std::vector<unsigned char> getRequest( int sock ) {
   unsigned char clientMessage[MSG_SIZE];
   bzero( clientMessage, MSG_SIZE );
-  ssize_t read_size;
+
+  recv( sock, clientMessage, 16, 0 );
+  ssize_t messageSize = std::stoi( std::string( ( const char * ) clientMessage ) );
+  printf( "Server(%s) getting message of len(%s)(%ld)", directory.c_str(), clientMessage, messageSize );
+
+  ssize_t readSize;
   std::vector<unsigned char> request = std::vector<unsigned char>();
 
-  read_size = recv( sock, clientMessage, MSG_SIZE, 0 );
+  while ( messageSize > 0 ) {
+    bzero( clientMessage, MSG_SIZE );
+    readSize = recv( sock, clientMessage, MSG_SIZE, 0 );
+    if ( readSize == -1 ) {
+      char err[6] = "ERROR";
+      printf( "Server (%s) recv error", directory.c_str() );
+      request.insert( request.begin(), err, err + 5 );
+      perror( "recv failed" );
+      return request;
+    }
 
-  if ( read_size == -1 ) {
-    char err[6] = "ERROR";
-    printf( "Server (%s) recv error", directory.c_str() );
-    request.insert( request.begin(), err, err + 5 );
-    perror( "recv failed" );
-    return request;
-  }
-
-  while ( read_size > 0 ) {
-    printf( "Server(%s) Read buffer from sock(%d):\n", directory.c_str(), sock );
-    for ( int i = 0; i < read_size; i++ ) {
+    printf( "Server(%s) Read buffer from sock, size(%ld):\n", directory.c_str(), readSize );
+    for ( int i = 0; i < readSize; i++ ) {
       printf( "%02X", clientMessage[ i ] );
     }
     printf( "\n" );
 
-    request.insert( request.end(), clientMessage, clientMessage + read_size );
-    printf( "Server(%s) read_size = %ld\n", directory.c_str(), read_size );
-
-    bzero( clientMessage, MSG_SIZE );
-    read_size = recv( sock, clientMessage, MSG_SIZE, 0 );
+    request.insert( request.end(), clientMessage, clientMessage + readSize );
+    messageSize -= readSize;
   }
 
   printf( "Server(%s) read vector.data: %s\n", directory.c_str(), request.data() );
   return request;
 }
 
-void sendResponse( int sock, Response response ) {
-  // Send header
-  send( sock, response.header.c_str(), response.header.length(), 0 );
-
-  if ( response.header.find( "ERROR" ) != 0 ) {
-    char buf[4];
-    recv( sock, buf, 4, 0 );
-
-    if ( strcmp( buf, "ACK" ) == 0 ) {
-      // Send if we did not send an error and we recvd an ACK
-      size_t file_read_size = response.body.size();
-      if ( file_read_size > 0 ) {
-        unsigned char *pbuf = ( unsigned char * ) response.body.data();
-
-        ssize_t send_size;
-        while ( file_read_size > 0 ) {
-          send_size = send( sock, pbuf, file_read_size, 0 );
-          if ( send_size < 0 ) {
-            perror( "Error sending get body" );
-          }
-          pbuf += send_size;
-          file_read_size -= send_size;
-        }
-      }
-    }
-  }
-}
-
-std::vector<char> loadFileToVector( std::string filename ) {
+std::vector<unsigned char> loadFileToVector( std::string filename ) {
   std::ifstream ifs( filename );
   if ( !ifs ) {
     perror( "Could not open file:" );
-    return *( new std::vector<char>() );
+    return std::vector<unsigned char>();
   }
   else {
-    return std::vector<char>( std::istreambuf_iterator<char>( ifs ), std::istreambuf_iterator<char>() );
+    return std::vector<unsigned char>( std::istreambuf_iterator<char>( ifs ), std::istreambuf_iterator<char>() );
   }
 }
 
@@ -300,6 +302,7 @@ Request parseRequest( std::vector<unsigned char> requestData ) {
   request.method = "";
   request.username = "";
   request.password = "";
+  // TODO: remove rank
   request.rank = '\0';
   request.path = "";
   request.filename = "";
@@ -434,31 +437,30 @@ Request parseRequest( std::vector<unsigned char> requestData ) {
 }
 
 
-Response handleListResponse( Request request ) {
-  Response response;
+void handleListResponse( Request request, int sock ) {
+
   // ls the directory using system calls
-  std::string command = "/bin/ls .";
+  std::string command = "/bin/ls -A .";
   command.append( directory );
   command.append( request.path );
   FILE *fp = popen( command.c_str(), "r" );
   if ( fp == NULL ) {
-    response.header = "ERROR";
-    response.body = *( new std::vector<char>() );
-    return response;
+    sendResponse( ( unsigned char * ) "ERROR", 6, sock );
+    return;
   }
 
   // Store the output of the ls command in a response
   std::string output = "";
   char buf[MSG_SIZE];
+  printf( "Server(%s) ls buffer(", directory.c_str() );
   while ( fgets( buf, sizeof( buf ) - 1, fp ) != NULL ) {
+    printf( "%s", buf );
     output.append( buf );
   }
-  response.body = *( new std::vector<char>( output.begin(), output.end() ) );
-  response.header = "SUCCESS";
+  sendResponse( ( unsigned char * ) output.c_str(), output.length(), sock );
 
   /* close file */
   pclose( fp );
-  return response;
 }
 
 Response handleGetResponse( Request request ) {
@@ -476,15 +478,12 @@ Response handleGetResponse( Request request ) {
   return response;
 }
 
-Response handlePutResponse( Request request ) {
+void handlePutResponse( Request request ) {
   printf( "Server (%s) handling put", directory.c_str() );
-  Response response;
   std::string localFilename =
     "." + directory + request.path + "." + request.filename
     + "." + std::to_string( request.pieceNumber ) + "." + request.rank;
   saveVectorToFile( request.data, localFilename );
-  response.header = "SUCCESS";
-  return response;
 }
 
 // TODO: handleMkdirResponse( Request request )
