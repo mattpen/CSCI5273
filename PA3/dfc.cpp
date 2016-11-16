@@ -13,10 +13,13 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <set>
 #include <math.h>
+#include <unordered_map>
+
 
 #define MSG_SIZE 2000
-#define SIZE_MESSAGE_SIZE 16
+#define SIZE_MESSAGE_SIZE 17
 
 struct Server {
     std::string name;
@@ -43,6 +46,8 @@ void handleList( std::string command );
 void handleGet( std::string command );
 
 void handlePut( std::string command );
+
+void handleMkDir( std::string command );
 
 void encryptFile( std::string filename );
 
@@ -81,6 +86,9 @@ int main( int argc, char *argv[] ) {
     }
     else if ( command.find( "PUT" ) == 0 ) {
       handlePut( command );
+    }
+    else if ( command.find( "MKDIR" ) == 0 ) {
+      handleMkDir( command );
     }
       // TODO: add MKDIR
     else if ( command.find( "EXIT" ) == 0 ) {
@@ -276,7 +284,7 @@ std::vector<unsigned char> getResponse( int sock ) {
   char sizeMessage[SIZE_MESSAGE_SIZE];
   bzero( sizeMessage, SIZE_MESSAGE_SIZE );
 
-  recv( sock, sizeMessage, SIZE_MESSAGE_SIZE, 0 );
+  recv( sock, sizeMessage, SIZE_MESSAGE_SIZE - 1, 0 );
   ssize_t messageSize = std::stoi( std::string( sizeMessage ) );
   printf( "Client getting message of len(%s)(%ld)", sizeMessage, messageSize );
 
@@ -287,7 +295,7 @@ std::vector<unsigned char> getResponse( int sock ) {
 
   while ( messageSize > 0 ) {
     bzero( clientMessage, MSG_SIZE );
-    readSize = recv( sock, clientMessage, MSG_SIZE, 0 );
+    readSize = recv( sock, clientMessage, MSG_SIZE - 1, 0 );
     if ( readSize == -1 ) {
       char err[6] = "ERROR";
       printf( "Client recv error" );
@@ -323,7 +331,7 @@ void handleList( std::string command ) {
 
   int sock = -1;
   std::string request;
-//  std::string responses[4];
+  std::unordered_map<std::string, std::set<int>> fileMap;
 
   request = "LIST " + config.username + ":" + config.password +
             command.substr( command.find( " " ), command.length() - command.find( " " ) - 1 ) +
@@ -332,7 +340,7 @@ void handleList( std::string command ) {
   for ( int i = 0; i < 4; i++ ) {
     sock = connectToServer( i );
     if ( sock != -1 ) {
-      printf( "LIST SENT: %s\n", request.c_str() );
+//      printf( "LIST SENT: %s\n", request.c_str() );
       sendRequest( ( unsigned char * ) request.c_str(), request.length(), sock );
       std::vector<unsigned char> responseVector;
       do {
@@ -341,10 +349,47 @@ void handleList( std::string command ) {
       }
       while ( responseVector.size() == 0 );
 
-      printf( "LIST RECVD: %s\n", responseVector.data() );
+//      printf( "LIST RECVD: %s\n", responseVector.data() );
+
+
+      std::string listString = ( char * ) responseVector.data();
+      while ( listString.compare( "" ) != 0 ) {
+        std::string line;
+        size_t newlineIndex = listString.find( '\n' );
+        if ( newlineIndex != std::string::npos ) {
+          line = listString.substr( 0, newlineIndex );
+          listString = listString.substr( newlineIndex + 1, listString.length() - newlineIndex );
+        }
+        else {
+          line = listString;
+          listString = "";
+        }
+
+        printf( "Parsing line(%s), listString(%s)\n", line.c_str(), listString.c_str() );
+
+        if ( line.find( "." ) == 0 && line.rfind( "." ) > line.find( "." ) && line.rfind( "." ) < line.length() - 1 ) {
+          std::string filename = line.substr( 1, line.rfind( "." ) - 1 );
+          printf( "List found filename(%s)\n", filename.c_str() );
+          int pieceNumber = std::stoi( line.substr( line.rfind( "." ) + 1, 1 ) );
+          fileMap[ filename ].insert( pieceNumber );
+        }
+      }
     }
   }
-  //
+
+  printf( "PRESENTING LIST:::\n" );
+  for ( auto it = fileMap.begin(); it != fileMap.end(); ++it ) {
+    if ( it->second.find( 0 ) != it->second.end()
+         && it->second.find( 1 ) != it->second.end()
+         && it->second.find( 2 ) != it->second.end()
+         && it->second.find( 3 ) != it->second.end() ) {
+      printf( "%s\n", it->first.c_str() );
+    }
+    else {
+      printf( "%s (incomplete)\n", it->first.c_str() );
+    }
+  }
+  printf( "END LIST:::\n" );
   closeSocket( sock );
 }
 
@@ -383,7 +428,7 @@ void handleGet( std::string command ) {
       sendRequest( ( unsigned char * ) request.c_str(), request.length(), sock );
 //      responses[ i ] = getResponse( sock );//
       responses[ i ] = Response();
-      //TODO: UNBROKE THIS
+      //TODO: UNBROKE THIS -- OH MY DIS SHIT BROKE
     }
     closeSocket( sock );
   }
@@ -491,7 +536,7 @@ void handlePut( std::string command ) {
           fileSize, fileSize / 4, ceil( fileSize / 4 ), filePieceLength );
 
   // Allocate memory for the file and read it
-  unsigned char *fileBuffer = new unsigned char[fileSize];
+  unsigned char fileBuffer[fileSize];
   fread( fileBuffer, fileSize, 1, filePointer );
   unsigned char *filePieceBuffer = fileBuffer;
 
@@ -506,32 +551,28 @@ void handlePut( std::string command ) {
   for ( int i = 0; i < 4; i++ ) {
     printf( "primaryServer(%d), fileSizeSent(%ld), filePieceLength(%ld), fileSize(%ld)\n", ( i + bin ) % 4,
             fileSizeSent, filePieceLength, fileSize );
-    std::string pieceNumberString = std::to_string( i ) + "\n";
 
-    // TODO: Remove primary/secondary elements
-
-    // Send the piece to the first server
+    // Connect to the appropriate servers
     int primarySock = connectToServer( ( i + bin ) % 4 );
-    if ( primarySock != -1 ) {
-      std::string primaryRequest = request + " p " + pieceNumberString;
-      unsigned char *message = new unsigned char[primaryRequest.length() + filePieceLength];
-      std::copy( ( unsigned char * ) primaryRequest.c_str(),
-                 ( unsigned char * ) primaryRequest.c_str() + primaryRequest.length(), message );
-      std::copy( filePieceBuffer, filePieceBuffer + filePieceLength, message + primaryRequest.length() );
-      sendRequest( message, primaryRequest.length() + filePieceLength, primarySock );
-    }
-    closeSocket( primarySock );
-
-    // Send the piece to the backup server
     int secondarySock = connectToServer( ( i + bin + 1 ) % 4 );
-    if ( secondarySock != -1 ) {
-      std::string secondaryRequest = request + " s " + pieceNumberString;
-      unsigned char *message = new unsigned char[secondaryRequest.length() + filePieceLength];
-      std::copy( ( unsigned char * ) secondaryRequest.c_str(),
-                 ( unsigned char * ) secondaryRequest.c_str() + secondaryRequest.length(), message );
-      std::copy( filePieceBuffer, filePieceBuffer + filePieceLength, message + secondaryRequest.length() );
-      sendRequest( message, secondaryRequest.length() + filePieceLength, secondarySock );
+
+    if ( primarySock != -1 ) {
+      // Add the piece number to the request
+      std::string pieceRequestString = request + " " + std::to_string( i ) + "\n";
+
+      // Concatenate the request and the data
+      unsigned char message[pieceRequestString.length() + filePieceLength];
+      std::copy( ( unsigned char * ) pieceRequestString.c_str(),
+                 ( unsigned char * ) pieceRequestString.c_str() + pieceRequestString.length(), message );
+      std::copy( filePieceBuffer, filePieceBuffer + filePieceLength, message + pieceRequestString.length() );
+
+      // Send the full message
+      sendRequest( message, pieceRequestString.length() + filePieceLength, primarySock );
+      sendRequest( message, pieceRequestString.length() + filePieceLength, secondarySock );
     }
+
+    // Close the connections, no response needed
+    closeSocket( primarySock );
     closeSocket( secondarySock );
 
     // Move the buffer forward filePieceLength
@@ -547,12 +588,22 @@ void handlePut( std::string command ) {
   // Delete the temporary file
   remove( ( filename ).c_str() );
 
-  // Clean up the file
-  delete[]fileBuffer;
+  // Close the file
   fclose( filePointer );
 }
 
-//TODO:: add handleMkdir()
+void handleMkDir( std::string command ) {
+  printf( "Handling mkdir" );
+  // Write authentication parameter to the request
+  command.insert( command.find(' '), " " + config.username + ":" + config.password );
+
+  // Send command to each server
+  for ( int i = 0; i < 4; i++ ) {
+    int sock = connectToServer( i );
+    sendRequest( (unsigned char*) command.c_str(), command.length(), sock );
+    closeSocket( sock );
+  }
+}
 
 void saveVectorToFile( std::vector<char> data, std::string filename ) {
   std::ofstream ofs( filename, std::ios::out | std::ofstream::binary );

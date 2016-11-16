@@ -22,7 +22,6 @@ struct Request {
     std::string method;
     std::string username;
     std::string password;
-    char rank;
     std::string path;
     std::string filename;
     std::vector<unsigned char> data;
@@ -41,6 +40,7 @@ std::string directory;
 
 
 #define MSG_SIZE 2000
+#define SIZE_MESSAGE_SIZE 17
 
 // clear socket errors
 int getSO_ERROR( int fd );
@@ -70,7 +70,7 @@ Response handleGetResponse( Request request );
 
 void handlePutResponse( Request request );
 
-Response handleMkdirResponse( Request request );
+void handleMkdirResponse( Request request );
 
 void initAuthentication();
 
@@ -170,7 +170,7 @@ void *requestCycle( void *socket_desc ) {
       handlePutResponse( request );
     }
     else if ( request.method.compare( "MKDIR" ) == 0 ) {
-//      handleMkdirResponse( request, sock );
+      handleMkdirResponse( request );
     }
     printf( "Server(%s) finished handling method(%s)\n", directory.c_str(), request.method.c_str() );
 
@@ -187,18 +187,6 @@ void *requestCycle( void *socket_desc ) {
 
   thread_count--;
   return 0;
-}
-
-Response handleMkdirResponse( Request request ) {
-  Response response = Response();
-  std::string fullPath = "." + directory + "/" + request.path;
-  if ( mkdir( fullPath.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH ) == 0 ) {
-    response.header = "SUCCESS";
-  }
-  else {
-    response.header = "ERROR: " + std::to_string( errno );
-  }
-  return response;
 }
 
 
@@ -237,19 +225,22 @@ void sendResponse( unsigned char *request, size_t request_size, int sock ) {
 
 
 std::vector<unsigned char> getRequest( int sock ) {
+  char sizeMessage[SIZE_MESSAGE_SIZE];
+  bzero( sizeMessage, SIZE_MESSAGE_SIZE );
+
+  recv( sock, sizeMessage, SIZE_MESSAGE_SIZE - 1, 0 );
+  ssize_t messageSize = std::stoi( std::string( sizeMessage ) );
+  printf( "Client getting message of len(%s)(%ld)", sizeMessage, messageSize );
+
   unsigned char clientMessage[MSG_SIZE];
   bzero( clientMessage, MSG_SIZE );
-
-  recv( sock, clientMessage, 16, 0 );
-  ssize_t messageSize = std::stoi( std::string( ( const char * ) clientMessage ) );
-  printf( "Server(%s) getting message of len(%s)(%ld)", directory.c_str(), clientMessage, messageSize );
 
   ssize_t readSize;
   std::vector<unsigned char> request = std::vector<unsigned char>();
 
   while ( messageSize > 0 ) {
     bzero( clientMessage, MSG_SIZE );
-    readSize = recv( sock, clientMessage, MSG_SIZE, 0 );
+    readSize = recv( sock, clientMessage, MSG_SIZE - 1, 0 );
     if ( readSize == -1 ) {
       char err[6] = "ERROR";
       printf( "Server (%s) recv error", directory.c_str() );
@@ -302,8 +293,6 @@ Request parseRequest( std::vector<unsigned char> requestData ) {
   request.method = "";
   request.username = "";
   request.password = "";
-  // TODO: remove rank
-  request.rank = '\0';
   request.path = "";
   request.filename = "";
   request.error = "";
@@ -401,20 +390,6 @@ Request parseRequest( std::vector<unsigned char> requestData ) {
   }
 
   start = end + 1;
-  // Validate rank token
-  if ( !( requestString[ start ] == 'p' || requestString[ start ] == 's' ) ) {
-    request.error = "BAD_RANK_TOKEN";
-    return request;
-  }
-  request.rank = requestString[ start ];
-  printf( "Server %s parsing request. Found rank=:%c:\n", directory.c_str(), request.rank );
-
-
-  if ( request.method.compare( "GET" ) == 0 ) {
-    return request;
-  }
-
-  start += 2;
   if ( start >= requestString.length() ) {
     request.error = "MISSING_PIECE_TOKEN";
     return request;
@@ -464,10 +439,11 @@ void handleListResponse( Request request, int sock ) {
 }
 
 Response handleGetResponse( Request request ) {
+  // TODO: dis shit so broke
   Response response;
   std::string localFilename =
     directory + "/." + request.path + "/" + request.filename
-    + "." + std::to_string( request.pieceNumber ) + "." + request.rank;
+    + "." + std::to_string( request.pieceNumber );
   response.body = loadFileToVector( localFilename );
   if ( response.body.size() > 0 ) {
     response.header = "SUCCESS " + localFilename + " " + std::to_string( response.body.size() );
@@ -482,11 +458,14 @@ void handlePutResponse( Request request ) {
   printf( "Server (%s) handling put", directory.c_str() );
   std::string localFilename =
     "." + directory + request.path + "." + request.filename
-    + "." + std::to_string( request.pieceNumber ) + "." + request.rank;
+    + "." + std::to_string( request.pieceNumber );
   saveVectorToFile( request.data, localFilename );
 }
 
-// TODO: handleMkdirResponse( Request request )
+void handleMkdirResponse( Request request ) {
+  std::string fullPath = "." + directory + "/" + request.path;
+  mkdir( fullPath.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH );
+}
 
 void initAuthentication() {
   std::ifstream ifs( "dfs.conf" );

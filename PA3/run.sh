@@ -4,7 +4,7 @@
 kill $(ps aux | grep dfs | awk -F ' ' '{print $2}') 2>/dev/null
 
 # Purge any temporary encrypted files and the DFS# directories
-rm -rf .* DFS*/.* 2>/dev/null
+rm -rf .* DFS*/.* DFS*/* 2>/dev/null
 
 # Start the servers and redirect output to the logs
 ./dfs /DFS1 10001 > server1.log &
