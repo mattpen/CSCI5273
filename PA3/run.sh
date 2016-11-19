@@ -14,4 +14,4 @@ rm -rf .* DFS*/.* DFS*/* 2>/dev/null
 
 # Start the client and wait for commands from stdin
 #valgrind -v --leak-check=full --show-leak-kinds=all ./dfc
-./dfc
+./dfc 2>client.log

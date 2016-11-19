@@ -68,9 +68,9 @@ void handleListResponse( Request request, int sock );
 
 void handleGetResponse( Request request, int sock );
 
-void handlePutResponse( Request request );
+void handlePutResponse( Request request, int sock );
 
-void handleMkdirResponse( Request request );
+void handleMkdirResponse( Request request, int sock );
 
 void initAuthentication();
 
@@ -179,10 +179,10 @@ void *requestCycle( void *socket_desc ) {
       handleGetResponse( request, sock );
     }
     else if ( request.method.compare( "PUT" ) == 0 ) {
-      handlePutResponse( request );
+      handlePutResponse( request, sock );
     }
     else if ( request.method.compare( "MKDIR" ) == 0 ) {
-      handleMkdirResponse( request );
+      handleMkdirResponse( request, sock );
     }
     printf( "Server(%s) finished handling method(%s)\n", directory.c_str(), request.method.c_str() );
 
@@ -190,7 +190,7 @@ void *requestCycle( void *socket_desc ) {
   else {
     printf( "Server(%s) had an error(%s)", directory.c_str(), request.error.c_str() );
     request.error.insert( 0, "ERROR " );
-    response.header = request.error;
+    sendResponse( ( unsigned char * ) request.error.c_str(), request.error.length(), sock );
   }
 
 //  sendResponse( sock, response );
@@ -353,7 +353,7 @@ Request parseRequest( std::vector<unsigned char> requestData ) {
   printf( "(%s) looking in %ld:%ld for un:pw\n", directory.c_str(), start, end );
   // validate token
   if ( delim == -1 || delim >= end || end <= start ) {
-    request.error = "BAD_AUTHORIZATION_TOKEN";
+    request.error = "Invalid	Username/Password.	Please	try	again.";
     return request;
   }
   request.username = requestString.substr( start, delim - start );
@@ -365,7 +365,7 @@ Request parseRequest( std::vector<unsigned char> requestData ) {
   if ( ( request.username.length() <= 0 || request.password.length() <= 0 )
        || ( userPasswordMap.find( request.username ) == userPasswordMap.end() )
        || ( userPasswordMap[ request.username ].compare( request.password ) != 0 ) ) {
-    request.error = "BAD_AUTHORIZATION_TOKEN";
+    request.error = "Invalid	Username/Password.	Please	try	again.";
     return request;
   }
 
@@ -386,6 +386,13 @@ Request parseRequest( std::vector<unsigned char> requestData ) {
   if ( request.path[ 0 ] == '/' ) {
     request.path = request.path.substr( 1, request.path.length() - 1 );
   }
+
+  request.path = '/' + request.username + '/' + request.path;
+
+  if ( request.path[ request.path.length() - 1 ] != '/' ) {
+    request.path += "/";
+  }
+
   printf( "Server %s parsing request. Found path=:%s:\n", directory.c_str(), request.path.c_str() );
 
   // User should not be able to view parent directory!
@@ -425,7 +432,6 @@ Request parseRequest( std::vector<unsigned char> requestData ) {
     request.error = "MISSING_PIECE_TOKEN";
     return request;
   }
-
 
   int pieceNumber;
   try {
@@ -487,7 +493,7 @@ void handleListResponse( Request request, int sock ) {
 
 void handleGetResponse( Request request, int sock ) {
 
-  std::string localFilename = "." + directory + request.path + "/." + request.filename;
+  std::string localFilename = "." + directory + request.path + "." + request.filename;
   std::vector<unsigned char> data1;
   std::vector<unsigned char> data2;
   std::string header = "";
@@ -513,32 +519,37 @@ void handleGetResponse( Request request, int sock ) {
     }
   }
 
-  // Write the size of the first piece, second piece size is implicit
-  header += std::to_string( data1.size() ) + " ";
-  printf( "Server(%s) sending get response with header(%s)\n", directory.c_str(), header.c_str() );
+  if ( data2.data() != NULL ) {
+    // Write the size of the first piece, second piece size is implicit
+    header += std::to_string( data1.size() ) + " ";
+    printf( "Server(%s) sending get response with header(%s)\n", directory.c_str(), header.c_str() );
 
-  ssize_t outLength = header.length() + data1.size() + data2.size();
-  unsigned char out[ outLength];
-  std::copy( ( unsigned char * ) header.c_str(),
-             ( unsigned char * ) header.c_str() + header.length(), out );
-  std::copy( data1.data(), data1.data() + data1.size(), out + header.length() );
-  std::copy( data2.data(), data2.data() + data2.size(), out + header.length() + data1.size() );
-
-
-  sendResponse( out, outLength, sock );
+    ssize_t outLength = header.length() + data1.size() + data2.size();
+    unsigned char out[outLength];
+    std::copy( ( unsigned char * ) header.c_str(),
+               ( unsigned char * ) header.c_str() + header.length(), out );
+    std::copy( data1.data(), data1.data() + data1.size(), out + header.length() );
+    std::copy( data2.data(), data2.data() + data2.size(), out + header.length() + data1.size() );
+    sendResponse( out, outLength, sock );
+  }
+  else {
+    sendResponse( ( unsigned char * ) "ERROR", 5, sock );
+  }
 }
 
-void handlePutResponse( Request request ) {
+void handlePutResponse( Request request, int sock ) {
   printf( "Server (%s) handling put", directory.c_str() );
   std::string localFilename =
-    "." + directory + request.path + "/." + request.filename
+    "." + directory + request.path + "." + request.filename
     + "." + std::to_string( request.pieceNumber );
   saveVectorToFile( request.data, localFilename );
+  sendResponse( ( unsigned char * ) "SUCCESS", 7, sock );
 }
 
-void handleMkdirResponse( Request request ) {
-  std::string fullPath = "." + directory + "/e" + request.path;
+void handleMkdirResponse( Request request, int sock ) {
+  std::string fullPath = "." + directory + "/" + request.path;
   mkdir( fullPath.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH );
+  sendResponse( ( unsigned char * ) "SUCCESS", 7, sock );
 }
 
 void initAuthentication() {
@@ -546,17 +557,17 @@ void initAuthentication() {
   std::string line;
 
   while ( std::getline( ifs, line ) ) {
-    // TODO: remove this line if not neeted
-    // std::istringstream iss( line );
     try {
       if ( line.find( "#" ) == 0 || line.compare( "" ) == 0 ) {
         // Don't try to parse comments
         continue;
       }
       else if ( line.find( " " ) >= 0 ) {
+        std::string username = line.substr( 0, line.find( " " ) );
+        mkdir( ( "." + directory + "/" + username ).c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH );
+
         // Username Password is the only supported directive
-        userPasswordMap[ line.substr( 0, line.find( " " ) ) ] =
-          line.substr( line.find( " " ) + 1, line.length() - line.find( " " ) - 1 );
+        userPasswordMap[ username ] = line.substr( line.find( " " ) + 1, line.length() - line.find( " " ) - 1 );
         printf( "Added un:pw: (%s:%s)\n",
                 line.substr( 0, line.find( " " ) ).c_str(),
                 userPasswordMap[ line.substr( 0, line.find( " " ) ) ].c_str() );
@@ -601,3 +612,4 @@ void closeSocket( int fd ) {
     }
   }
 }
+

@@ -151,11 +151,11 @@ void initConfig() {
           portNum = ( uint16_t ) std::stoi( port.c_str() );
         }
         catch ( std::invalid_argument e ) {
-          printf( "Client invalid port stoi(%s)\n", port.c_str() );
+          fprintf( stderr, "Client invalid port stoi(%s)\n", port.c_str() );
           return;
         }
         catch ( std::out_of_range e ) {
-          printf( "Client out-of-range port stoi(%s)\n", port.c_str() );
+          fprintf( stderr, "Client out-of-range port stoi(%s)\n", port.c_str() );
           return;
         }
         config.servers[ socketNum ].port = portNum;
@@ -173,7 +173,7 @@ void initConfig() {
     }
     catch ( int e ) {
       // If configuration parse fails then exit immediately
-      printf( "Error occurred reading line: %s in config, error message: %d\n", line.c_str(), e );
+      fprintf( stderr, "Error occurred reading line: %s in config, error message: %d\n", line.c_str(), e );
       exit( 1 );
     }
   }
@@ -192,7 +192,7 @@ void initConfig() {
        || ( config.servers[ 3 ].name.compare( "" ) == 0
             || config.servers[ 3 ].ipAddr.compare( "" ) == 0
             || config.servers[ 3 ].port == -1 ) ) {
-    printf( "Error reading configuration.\n" );
+    fprintf( stderr, "Error reading configuration.\n" );
     exit( 1 );
   }
 }
@@ -202,15 +202,13 @@ void initConfig() {
  * @param i
  * @return socket - file descriptor
  */
-int connectToServer( int i ) {
+int connectToServer( int serverIndex ) {
   // init socket
   struct sockaddr_in server;
-  int newSock;
-  newSock = socket( AF_INET, SOCK_STREAM, 0 );
+  int newSock = socket( AF_INET, SOCK_STREAM, 0 );
   if ( newSock == -1 ) {
-    char err[MSG_SIZE];
-    sprintf( err, "Sock not created for %d. Error", i );
-    perror( err );
+    fprintf( stderr, "Sock not created for server %d. Error: %d", serverIndex, errno );
+    return -1;
   }
 
   // Add a 1 second timeout
@@ -218,35 +216,32 @@ int connectToServer( int i ) {
   timeout.tv_sec = 1;
   timeout.tv_usec = 0;
   if ( setsockopt( newSock, SOL_SOCKET, SO_RCVTIMEO, ( char * ) &timeout, sizeof( timeout ) ) < 0 ) {
-    char err[MSG_SIZE];
-    sprintf( err, "setsockopt(SO_RCVTIMEO) failed for server(%d). Error", i );
-    perror( err );
+    fprintf( stderr, "setsockopt(SO_RCVTIMEO) failed for server(%d). Error: %d", serverIndex, errno );
+    return -1;
   }
   if ( setsockopt( newSock, SOL_SOCKET, SO_SNDTIMEO, ( char * ) &timeout, sizeof( timeout ) ) < 0 ) {
-    char err[MSG_SIZE];
-    sprintf( err, "setsockopt(SO_SNDTIMEO) failed for server(%d). Error", i );
-    perror( err );
+    fprintf( stderr, "setsockopt(SO_SNDTIMEO) failed for server(%d). Error: %d", serverIndex, errno );
+    return -1;
   }
 
   // Allow client to reuse port/addr if in TIME_WAIT state
   int enable = 1;
   if ( setsockopt( newSock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof( int ) ) < 0 ) {
-    char err[MSG_SIZE];
-    sprintf( err, "setsockopt(SO_REUSEADDR) failed for server(%d). Error", i );
-    perror( err );
+    fprintf( stderr, "setsockopt(SO_REUSEADDR) failed for server(%d). Error: %d", serverIndex, errno );
+    return -1;
   }
 
-  server.sin_addr.s_addr = inet_addr( config.servers[ i ].ipAddr.c_str() );
+  server.sin_addr.s_addr = inet_addr( config.servers[ serverIndex ].ipAddr.c_str() );
   server.sin_family = AF_INET;
-  server.sin_port = htons( ( uint16_t ) config.servers[ i ].port );
+  server.sin_port = htons( ( uint16_t ) config.servers[ serverIndex ].port );
+
 
   if ( connect( newSock, ( struct sockaddr * ) &server, sizeof( server ) ) < 0 ) {
-    char err[MSG_SIZE];
-    sprintf( err, "Connect failed for %d. Error", i );
-    perror( err );
+    fprintf( stderr, "Connect failed for server %d. Error: %d\n", serverIndex, errno );
+    return -1;
   }
 
-  return newSock;
+  return newSock; // This should return -1 if the connection failed and be handled elsewhere
 }
 
 /**
@@ -267,15 +262,15 @@ void sendRequest( unsigned char *request, size_t request_size, int sock ) {
 
   while ( request_size > 0 ) {
     ssize_t send_size = send( sock, send_buffer, request_size, 0 );
-    printf( "Client sent size(%ld), ", send_size );
-    printf( "data:(" );
+    fprintf( stderr, "Client sent size(%ld), ", send_size );
+    fprintf( stderr, "data:(" );
     for ( int i = 0; i < request_size; i++ ) {
-      printf( "%02X", send_buffer[ i ] );
+      fprintf( stderr, "%02X", send_buffer[ i ] );
       if ( ( i + 1 ) % 2 == 0 ) {
-        printf( " " );
+        fprintf( stderr, " " );
       }
     }
-    printf( ")\n" );
+    fprintf( stderr, ")\n" );
 
     if ( send_size < 0 ) {
       perror( "Error sending get body" );
@@ -299,9 +294,9 @@ std::vector<unsigned char> getResponse( int sock ) {
 
   while ( bytesRead < SIZE_MESSAGE_SIZE - 1 ) {
     bytesRead += recv( sock, sizeMessage, SIZE_MESSAGE_SIZE - 1 - bytesRead, 0 );
-    printf( "Client read(%ld) bytes, message(%s)\n", bytesRead, sizeMessage );
+    fprintf( stderr, "Client read(%ld) bytes, message(%s)\n", bytesRead, sizeMessage );
     if ( bytesRead == 0 || bytesRead == -1 ) {
-      printf( "Error during getResponse\n" );
+      fprintf( stderr, "Error during getResponse\n" );
       return std::vector<unsigned char>();
     }
   }
@@ -311,14 +306,14 @@ std::vector<unsigned char> getResponse( int sock ) {
     messageSize = std::stoi( std::string( sizeMessage ) );
   }
   catch ( std::invalid_argument e ) {
-    printf( "Client invalid messageSize stoi(%s)\n", sizeMessage );
+    fprintf( stderr, "Client invalid messageSize stoi(%s)\n", sizeMessage );
     return std::vector<unsigned char>();
   }
   catch ( std::out_of_range e ) {
-    printf( "Client out-of-range messageSize stoi(%s)\n", sizeMessage );
+    fprintf( stderr, "Client out-of-range messageSize stoi(%s)\n", sizeMessage );
     return std::vector<unsigned char>();
   }
-  printf( "Client getting message of len(%s)(%ld)\n", sizeMessage, messageSize );
+  fprintf( stderr, "Client getting message of len(%s)(%ld)\n", sizeMessage, messageSize );
 
   unsigned char clientMessage[MSG_SIZE];
   bzero( clientMessage, MSG_SIZE );
@@ -330,23 +325,34 @@ std::vector<unsigned char> getResponse( int sock ) {
     readSize = recv( sock, clientMessage, MSG_SIZE - 1, 0 );
     if ( readSize == -1 ) {
       char err[6] = "ERROR";
-      printf( "Client recv error\n" );
+      fprintf( stderr, "Client recv error\n" );
       responseVector.insert( responseVector.begin(), err, err + 5 );
       perror( "recv failed" );
       return responseVector;
     }
 
-    printf( "Client read buffer from sock, size(%ld):\n", readSize );
+    fprintf( stderr, "Client read buffer from sock, size(%ld):\n", readSize );
     for ( int i = 0; i < readSize; i++ ) {
-      printf( "%02X", clientMessage[ i ] );
+      fprintf( stderr, "%02X", clientMessage[ i ] );
     }
-    printf( "\n" );
+    fprintf( stderr, "\n" );
 
     responseVector.insert( responseVector.end(), clientMessage, clientMessage + readSize );
     messageSize -= readSize;
   }
 
-  printf( "Client read vector.data: %s\n", responseVector.data() );
+  fprintf( stderr, "Client read vector.data: %s\n", responseVector.data() );
+  std::string error;
+  int i = 0;
+  for ( ; i < 5 && i < responseVector.size(); i++ ) {
+    error.push_back( responseVector[ i ] );
+  }
+  if ( error.compare( "ERROR" ) == 0 || responseVector.size() < 5 ) {
+    for ( ; i < responseVector.size(); i++ ) {
+      error.push_back( responseVector[ i ] );
+    }
+    printf( "SERVER ERROR(%s)\n", error.c_str() );
+  }
   return responseVector;
 }
 
@@ -359,30 +365,31 @@ std::vector<unsigned char> getResponse( int sock ) {
  * @param command
  */
 void handleList( std::string command ) {
-  printf( "handling list\n" );
+  fprintf( stderr, "handling list\n" );
 
   int sock = -1;
   std::string request;
+  std::string path;
   std::unordered_map<std::string, std::set<int>> fileMap;
 
 
-  request = "LIST " + config.username + ":" + config.password;
   if ( command.find( " " ) != -1 ) {
-    request += command.substr( command.find( " " ), command.length() - command.find( " " ) - 1 ) + "\n";
+    path = command.substr( command.find( " " ), command.length() - command.find( " " ) - 1 ) + "\n";
   }
   else {
-    request += " /";
+    path = " /";
   }
+  request = "LIST " + config.username + ":" + config.password + path;
 
   for ( int i = 0; i < 4; i++ ) {
     sock = connectToServer( i );
     if ( sock != -1 ) {
-//      printf( "LIST SENT: %s\n", request.c_str() );
+      fprintf( stderr, "LIST SENT: %s\n", request.c_str() );
       sendRequest( ( unsigned char * ) request.c_str(), request.length(), sock );
       std::vector<unsigned char> responseVector = getResponse( sock );
 
 
-//      printf( "LIST RECVD: %s\n", responseVector.data() );
+      fprintf( stderr, "LIST RECVD: %s\n", responseVector.data() );
 
       if ( responseVector.data() != NULL ) {
         std::string listString = ( char * ) responseVector.data();
@@ -398,22 +405,24 @@ void handleList( std::string command ) {
             listString = "";
           }
 
-          printf( "Parsing line(%s), listString(%s)\n", line.c_str(), listString.c_str() );
+          fprintf( stderr, "Parsing line(%s), listString(%s)\n", line.c_str(), listString.c_str() );
 
           if ( line.find( "." ) == 0 && line.rfind( "." ) > line.find( "." ) &&
                line.rfind( "." ) < line.length() - 1 ) {
             std::string filename = line.substr( 1, line.rfind( "." ) - 1 );
-            printf( "List found filename(%s)\n", filename.c_str() );
+            fprintf( stderr, "List found filename(%s)\n", filename.c_str() );
             int pieceNumber;
             try {
               pieceNumber = std::stoi( line.substr( line.rfind( "." ) + 1, 1 ).c_str() );
             }
             catch ( std::invalid_argument e ) {
-              printf( "Client invalid pieceNumber stoi(%s)\n", line.substr( line.rfind( "." ) + 1, 1 ).c_str() );
+              fprintf( stderr, "Client invalid pieceNumber stoi(%s)\n",
+                       line.substr( line.rfind( "." ) + 1, 1 ).c_str() );
               return;
             }
             catch ( std::out_of_range e ) {
-              printf( "Client out-of-range pieceNumber stoi(%s)\n", line.substr( line.rfind( "." ) + 1, 1 ).c_str() );
+              fprintf( stderr, "Client out-of-range pieceNumber stoi(%s)\n",
+                       line.substr( line.rfind( "." ) + 1, 1 ).c_str() );
               return;
             }
             fileMap[ filename ].insert( pieceNumber );
@@ -423,7 +432,6 @@ void handleList( std::string command ) {
     }
   }
 
-  printf( "PRESENTING LIST:::\n" );
   for ( auto it = fileMap.begin(); it != fileMap.end(); ++it ) {
     if ( it->second.find( 0 ) != it->second.end()
          && it->second.find( 1 ) != it->second.end()
@@ -432,10 +440,10 @@ void handleList( std::string command ) {
       printf( "%s\n", it->first.c_str() );
     }
     else {
-      printf( "%s (incomplete)\n", it->first.c_str() );
+      printf( "%s [incomplete]\n", it->first.c_str() );
     }
   }
-  printf( "END LIST:::\n" );
+  printf( "LIST complete for:%s\n", path.c_str() );
   closeSocket( sock );
 }
 
@@ -445,16 +453,30 @@ void handleList( std::string command ) {
  * @param serverIndex
  * @return true if pieces were successfully found, false if error
  */
-bool
-sendGetRequest( std::unordered_map<int, std::vector<unsigned char>> &pieceMap, std::string request, int serverIndex ) {
+bool sendGetRequest(
+  std::unordered_map<int, std::vector<unsigned char>> &pieceMap, std::string request, int serverIndex ) {
 
   // Connect and handle request/response
   int sock = connectToServer( serverIndex );
+  if ( sock == -1 ) {
+    fprintf( stderr, "Connect failed for server: %d\n", serverIndex );
+    return false;
+  }
   sendRequest( ( unsigned char * ) request.c_str(), request.length(), sock );
   std::vector<unsigned char> response = getResponse( sock );
   closeSocket( sock );
 
-//  printf( "Client got GET response\n" );
+  fprintf( stderr, "Client got GET response\n" );
+
+  std::string first5Chars;
+  for ( int i = 0; i < 5 && i < response.size(); i++ ) {
+    first5Chars.push_back( response[ i ] );
+  }
+  if ( first5Chars.compare( "ERROR" ) == 0 || response.size() < 5 ) {
+    fprintf( stderr, "sendGetRequest SERVER ERROR(%d)\n", serverIndex );
+    return false;
+  }
+
   size_t readIndex = 0;
   std::string buffer;
 
@@ -463,9 +485,9 @@ sendGetRequest( std::unordered_map<int, std::vector<unsigned char>> &pieceMap, s
   for ( ; response[ readIndex ] != ' '; readIndex++ ) {
     buffer.push_back( response[ readIndex ] );
   }
-//  printf( "Client read buffer during GET firstPieceNum(%s)", buffer.c_str() );
+  fprintf( stderr, "Client read buffer during GET firstPieceNum(%s)", buffer.c_str() );
   int firstPieceNumber = std::stoi( buffer );
-//  printf( "Client read piece(%d) from server(%d)\n", firstPieceNumber, serverIndex );
+  fprintf( stderr, "Client read piece(%d) from server(%d)\n", firstPieceNumber, serverIndex );
   readIndex++;
 
   // Get the piece number for the second piece
@@ -473,9 +495,9 @@ sendGetRequest( std::unordered_map<int, std::vector<unsigned char>> &pieceMap, s
   for ( ; response[ readIndex ] != ' '; readIndex++ ) {
     buffer.push_back( response[ readIndex ] );
   }
-//  printf( "Client read buffer during GET secondPieceNum(%s)", buffer.c_str() );
+  fprintf( stderr, "Client read buffer during GET secondPieceNum(%s)", buffer.c_str() );
   int secondPieceNumber = std::stoi( buffer );
-//  printf( "Client read piece(%d) from server(%d)\n", secondPieceNumber, serverIndex );
+  fprintf( stderr, "Client read piece(%d) from server(%d)\n", secondPieceNumber, serverIndex );
   readIndex++;
 
   // Get the index for the first byte of the second piece
@@ -483,10 +505,10 @@ sendGetRequest( std::unordered_map<int, std::vector<unsigned char>> &pieceMap, s
   for ( ; response[ readIndex ] != ' '; readIndex++ ) {
     buffer.push_back( response[ readIndex ] );
   }
-//  printf( "Client read buffer during GET firstPieceSize(%s)", buffer.c_str() );
+  fprintf( stderr, "Client read buffer during GET firstPieceSize(%s)", buffer.c_str() );
   readIndex++;
   ssize_t splitIndex = std::stoi( buffer ) + readIndex;
-//  printf( "Client got splitIndex(%ld) from server(%d)\n", splitIndex, serverIndex );
+  fprintf( stderr, "Client got splitIndex(%ld) from server(%d)\n", splitIndex, serverIndex );
 
   // Read the first piece
   std::vector<unsigned char> firstPiece;
@@ -507,7 +529,7 @@ sendGetRequest( std::unordered_map<int, std::vector<unsigned char>> &pieceMap, s
 }
 
 void handleGet( std::string command ) {
-  printf( "handling get\n" );
+  fprintf( stderr, "handling get\n" );
   std::string filename;
   std::string path;
 
@@ -545,7 +567,7 @@ void handleGet( std::string command ) {
     path.pop_back();
   }
 
-//  printf( "GET found path(%s), filename(%s)\n", path.c_str(), filename.c_str() );
+  fprintf( stderr, "GET found path(%s), filename(%s)\n", path.c_str(), filename.c_str() );
   // Add path and filename to PUT request string
   request += " " + path + " " + filename;
 
@@ -556,48 +578,60 @@ void handleGet( std::string command ) {
   // Get pieces from server 0
   if ( !sendGetRequest( pieces, request, 0 ) ) {
     //If server 0 didn't respond get pieces from server 1
-    if ( !sendGetRequest( pieces, request, 1 ) ) { return; }
+    if ( !sendGetRequest( pieces, request, 1 ) ) {
+      printf( "File incomplete on server: %s\n", filename.c_str() );
+      return;
+    }
     else {
       //get piece from server 3
-      if ( !sendGetRequest( pieces, request, 3 ) ) { return; }
+      if ( !sendGetRequest( pieces, request, 3 ) ) {
+        printf( "File incomplete on server: %s\n", filename.c_str() );
+        return;
+      }
     }
   }
   else {
     //Get pieces from server 2
     if ( !sendGetRequest( pieces, request, 2 ) ) {
       //If server 2 didn't respond get pieces from server 1&3
-      if ( !sendGetRequest( pieces, request, 1 ) ) { return; }
+      if ( !sendGetRequest( pieces, request, 1 ) ) {
+        printf( "File incomplete on server: %s\n", filename.c_str() );
+        return;
+      }
       else {
         // get piece from server 3
-        if ( !sendGetRequest( pieces, request, 3 ) ) { return; }
+        if ( !sendGetRequest( pieces, request, 3 ) ) {
+          printf( "File incomplete on server: %s\n", filename.c_str() );
+          return;
+        }
       }
     }
   }
 
   // Write the pieces to a temporary encrypted file
-  std::ofstream ofs( ".NEW" + filename, std::ios::out | std::ofstream::binary );
+  std::ofstream ofs( "." + filename, std::ios::out | std::ofstream::binary );
   for ( int i = 0; i < 4; i++ ) {
-    printf( "Concatenating piece(%d):(", i );
+    fprintf( stderr, "Concatenating piece(%d):(", i );
     for ( int j = 0; j < pieces[ i ].size(); j++ ) {
-      printf( "%02X", pieces[ i ][ j ] );
+      fprintf( stderr, "%02X", pieces[ i ][ j ] );
       if ( ( j + 1 ) % 2 == 0 ) {
-        printf( " " );
+        fprintf( stderr, " " );
       }
     }
-    printf( ")\n" );
+    fprintf( stderr, ")\n" );
 
     std::copy( pieces[ i ].begin(), pieces[ i ].end(), std::ostreambuf_iterator<char>( ofs ) );
   }
   ofs.close();
 
+  // Decrypt the file and remove the temp
   decryptFile( filename );
-  // Delete the temporary file
-//  remove( ( ".NEW" + filename ).c_str() );
-
+  remove( ( "." + filename ).c_str() );
+  printf( "GET complete, file written to:%s\n", filename.c_str() );
 }
 
 void handlePut( std::string command ) {
-  printf( "handling put\n" );
+  fprintf( stderr, "handling put\n" );
   std::string filename;
   std::string path;
 
@@ -635,7 +669,7 @@ void handlePut( std::string command ) {
     path.pop_back();
   }
 
-//  printf( "PUT found path(%s), filename(%s)\n", path.c_str(), filename.c_str() );
+  fprintf( stderr, "PUT found path(%s), filename(%s)\n", path.c_str(), filename.c_str() );
   // Add path and filename to PUT request string
   request += " " + path + " " + filename;
 
@@ -649,7 +683,7 @@ void handlePut( std::string command ) {
   // Open the file, if it exists
   FILE *filePointer = NULL;
   if ( ( filePointer = fopen( filename.c_str(), "rb" ) ) == NULL ) {
-    perror( "Could not open specified file" );
+    printf( "Could not open specified file. Error:%d\n", errno );
     return;
   }
 
@@ -660,8 +694,8 @@ void handlePut( std::string command ) {
   fileSize = ftell( filePointer );
   fseek( filePointer, 0, SEEK_SET );
   filePieceLength = ( size_t ) ceil( ( ( double ) fileSize ) / 4.0 );
-  printf( "Found fileSize(%ld), fileSize/4(%ld), ceil(%lf) filePieceLength(%ld)\n", fileSize, fileSize / 4,
-          ceil( fileSize / 4 ), filePieceLength );
+  fprintf( stderr, "Found fileSize(%ld), fileSize/4(%ld), ceil(%lf) filePieceLength(%ld)\n", fileSize, fileSize / 4,
+           ceil( fileSize / 4 ), filePieceLength );
 
   // Allocate memory for the file and read it
   unsigned char fileBuffer[fileSize];
@@ -669,15 +703,16 @@ void handlePut( std::string command ) {
   unsigned char *filePieceBuffer = fileBuffer;
 
   // Print file in hex for debugging
-  printf( "Read file into memory(" );
+  fprintf( stderr, "Read file into memory(" );
   for ( int i = 0; i < fileSize; i++ ) {
-    printf( "%02X", fileBuffer[ i ] );
+    fprintf( stderr, "%02X", fileBuffer[ i ] );
   }
-  printf( ")\n" );
+  fprintf( stderr, ")\n" );
 
   size_t fileSizeSent = 0;
   for ( int i = 0; i < 4; i++ ) {
-    //printf( "primaryServer(%d), fileSizeSent(%ld), filePieceLength(%ld), fileSize(%ld)\n", ( i + bin ) % 4, fileSizeSent, filePieceLength, fileSize );
+    fprintf( stderr, "primaryServer(%d), fileSizeSent(%ld), filePieceLength(%ld), fileSize(%ld)\n", ( i + bin ) % 4,
+             fileSizeSent, filePieceLength, fileSize );
 
     // Connect to the appropriate servers
     int primarySock = connectToServer( ( i + bin ) % 4 );
@@ -687,14 +722,14 @@ void handlePut( std::string command ) {
       // Add the piece number to the request
       std::string pieceRequestString = request + " " + std::to_string( i ) + "\n";
 
-      printf( "Sending piece(%i)(", i );
+      fprintf( stderr, "Sending piece(%i)(", i );
       for ( int j = 0; j < filePieceLength; j++ ) {
-        printf( "%02X", filePieceBuffer[ j ] );
+        fprintf( stderr, "%02X", filePieceBuffer[ j ] );
         if ( ( j + 1 ) % 2 == 0 ) {
-          printf( " " );
+          fprintf( stderr, " " );
         }
       }
-      printf( ")\n" );
+      fprintf( stderr, ")\n" );
 
       // Concatenate the request and the data
       unsigned char message[pieceRequestString.length() + filePieceLength];
@@ -704,7 +739,9 @@ void handlePut( std::string command ) {
 
       // Send the full message
       sendRequest( message, pieceRequestString.length() + filePieceLength, primarySock );
+      getResponse( primarySock );
       sendRequest( message, pieceRequestString.length() + filePieceLength, secondarySock );
+      getResponse( secondarySock );
     }
 
     // Close the connections, no response needed
@@ -722,14 +759,15 @@ void handlePut( std::string command ) {
   }
 
   // Delete the temporary file
-//  remove( ( filename ).c_str() );
+  remove( ( filename ).c_str() );
 
   // Close the file
   fclose( filePointer );
+  printf( "PUT complete: %s\n", filename.c_str() );
 }
 
 void handleMkDir( std::string command ) {
-  printf( "Handling mkdir\n" );
+  fprintf( stderr, "Handling mkdir\n" );
   // Write authentication parameter to the request
   command.insert( command.find( ' ' ), " " + config.username + ":" + config.password );
 
@@ -737,8 +775,10 @@ void handleMkDir( std::string command ) {
   for ( int i = 0; i < 4; i++ ) {
     int sock = connectToServer( i );
     sendRequest( ( unsigned char * ) command.c_str(), command.length(), sock );
+    getResponse( sock );
     closeSocket( sock );
   }
+  printf( "MKDIR complete\n" );
 }
 
 void saveVectorToFile( std::vector<char> data, std::string filename ) {
@@ -766,11 +806,11 @@ int getBinForFile( std::string filename ) {
     ret = std::stoi( buf );
   }
   catch ( std::invalid_argument e ) {
-    printf( "Client invalid of buf stoi(%s)\n", buf );
+    fprintf( stderr, "Client invalid of buf stoi(%s)\n", buf );
     return -1;
   }
   catch ( std::out_of_range e ) {
-    printf( "Client out-of-range of buf stoi(%s)\n", buf );
+    fprintf( stderr, "Client out-of-range of buf stoi(%s)\n", buf );
     return -1;
   }
   return ret;
@@ -778,7 +818,8 @@ int getBinForFile( std::string filename ) {
 
 void encryptFile( std::string filename ) {
   // encrypt the file in tempfile .filename
-  std::string command = "openssl aes-256-cbc -salt -in " + filename + " -out ." + filename + " -pass file:enc.key";
+  std::string command = "openssl aes-256-cbc -salt -in " + filename + " -out ." + filename +
+    " -pass pass:" + config.username + "." + config.password;
 
   // run the command
   FILE *fp = popen( command.c_str(), "r" );
@@ -790,8 +831,9 @@ void encryptFile( std::string filename ) {
 
 void decryptFile( std::string filename ) {
   // encrypt the file in tempfile .filename
-  std::string command = "openssl aes-256-cbc -d -in .NEW" + filename + " -out NEW." + filename + " -pass file:enc.key";
-  printf( "Client running decrypt(%s)\n", command.c_str() );
+  std::string command = "openssl aes-256-cbc -d -in ." + filename + " -out " + filename +
+    " -pass pass:" + config.username + "." + config.password;
+  fprintf( stderr, "Client running decrypt(%s)\n", command.c_str() );
   FILE *fp = popen( command.c_str(), "r" );
   if ( fp == NULL ) {
     perror( "Problem running decryptFile:" );
