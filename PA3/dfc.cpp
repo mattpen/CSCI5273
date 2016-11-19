@@ -35,7 +35,6 @@ struct Config {
 
 struct Response {
     std::string header;
-    std::vector<char> body;
 };
 
 // Get the configuration file and initialize the global config parameter
@@ -115,8 +114,6 @@ void initConfig() {
   }
 
   while ( std::getline( ifs, line ) ) {
-    // TODO: remove this line if not neeted
-    //    std::istringstream iss( line );
     try {
       if ( line.find( "#" ) == 0 || line.compare( "" ) == 0 ) {
         // Ignore comments and empty lines
@@ -149,7 +146,19 @@ void initConfig() {
 
         config.servers[ socketNum ].name = name;
         config.servers[ socketNum ].ipAddr = ipAddr;
-        config.servers[ socketNum ].port = ( uint16_t ) std::stoi( port );
+        uint16_t portNum;
+        try {
+          portNum = ( uint16_t ) std::stoi( port.c_str() );
+        }
+        catch ( std::invalid_argument e ) {
+          printf( "Client invalid port stoi(%s)\n", port.c_str() );
+          return;
+        }
+        catch ( std::out_of_range e ) {
+          printf( "Client out-of-range port stoi(%s)\n", port.c_str() );
+          return;
+        }
+        config.servers[ socketNum ].port = portNum;
 
       }
       else if ( line.find( "Username" ) == 0 ) {
@@ -258,12 +267,15 @@ void sendRequest( unsigned char *request, size_t request_size, int sock ) {
 
   while ( request_size > 0 ) {
     ssize_t send_size = send( sock, send_buffer, request_size, 0 );
-    printf( "Client sent size(%ld), send_buffer(%*s)\n", send_size, ( int ) send_size, send_buffer );
-    printf( "In hex:\n" );
+    printf( "Client sent size(%ld), ", send_size );
+    printf( "data:(" );
     for ( int i = 0; i < request_size; i++ ) {
       printf( "%02X", send_buffer[ i ] );
+      if ( ( i + 1 ) % 2 == 0 ) {
+        printf( " " );
+      }
     }
-    printf( "\n" );
+    printf( ")\n" );
 
     if ( send_size < 0 ) {
       perror( "Error sending get body" );
@@ -283,10 +295,30 @@ void sendRequest( unsigned char *request, size_t request_size, int sock ) {
 std::vector<unsigned char> getResponse( int sock ) {
   char sizeMessage[SIZE_MESSAGE_SIZE];
   bzero( sizeMessage, SIZE_MESSAGE_SIZE );
+  size_t bytesRead = 0;
 
-  recv( sock, sizeMessage, SIZE_MESSAGE_SIZE - 1, 0 );
-  ssize_t messageSize = std::stoi( std::string( sizeMessage ) );
-  printf( "Client getting message of len(%s)(%ld)", sizeMessage, messageSize );
+  while ( bytesRead < SIZE_MESSAGE_SIZE - 1 ) {
+    bytesRead += recv( sock, sizeMessage, SIZE_MESSAGE_SIZE - 1 - bytesRead, 0 );
+    printf( "Client read(%ld) bytes, message(%s)\n", bytesRead, sizeMessage );
+    if ( bytesRead == 0 || bytesRead == -1 ) {
+      printf( "Error during getResponse\n" );
+      return std::vector<unsigned char>();
+    }
+  }
+
+  ssize_t messageSize;
+  try {
+    messageSize = std::stoi( std::string( sizeMessage ) );
+  }
+  catch ( std::invalid_argument e ) {
+    printf( "Client invalid messageSize stoi(%s)\n", sizeMessage );
+    return std::vector<unsigned char>();
+  }
+  catch ( std::out_of_range e ) {
+    printf( "Client out-of-range messageSize stoi(%s)\n", sizeMessage );
+    return std::vector<unsigned char>();
+  }
+  printf( "Client getting message of len(%s)(%ld)\n", sizeMessage, messageSize );
 
   unsigned char clientMessage[MSG_SIZE];
   bzero( clientMessage, MSG_SIZE );
@@ -298,7 +330,7 @@ std::vector<unsigned char> getResponse( int sock ) {
     readSize = recv( sock, clientMessage, MSG_SIZE - 1, 0 );
     if ( readSize == -1 ) {
       char err[6] = "ERROR";
-      printf( "Client recv error" );
+      printf( "Client recv error\n" );
       responseVector.insert( responseVector.begin(), err, err + 5 );
       perror( "recv failed" );
       return responseVector;
@@ -333,45 +365,59 @@ void handleList( std::string command ) {
   std::string request;
   std::unordered_map<std::string, std::set<int>> fileMap;
 
-  request = "LIST " + config.username + ":" + config.password +
-            command.substr( command.find( " " ), command.length() - command.find( " " ) - 1 ) +
-            "\n";
+
+  request = "LIST " + config.username + ":" + config.password;
+  if ( command.find( " " ) != -1 ) {
+    request += command.substr( command.find( " " ), command.length() - command.find( " " ) - 1 ) + "\n";
+  }
+  else {
+    request += " /";
+  }
 
   for ( int i = 0; i < 4; i++ ) {
     sock = connectToServer( i );
     if ( sock != -1 ) {
 //      printf( "LIST SENT: %s\n", request.c_str() );
       sendRequest( ( unsigned char * ) request.c_str(), request.length(), sock );
-      std::vector<unsigned char> responseVector;
-      do {
-        send( sock, "", 0, 0 );
-        responseVector = getResponse( sock );
-      }
-      while ( responseVector.size() == 0 );
+      std::vector<unsigned char> responseVector = getResponse( sock );
+
 
 //      printf( "LIST RECVD: %s\n", responseVector.data() );
 
+      if ( responseVector.data() != NULL ) {
+        std::string listString = ( char * ) responseVector.data();
+        while ( listString.compare( "" ) != 0 ) {
+          std::string line;
+          size_t newlineIndex = listString.find( '\n' );
+          if ( newlineIndex != std::string::npos ) {
+            line = listString.substr( 0, newlineIndex );
+            listString = listString.substr( newlineIndex + 1, listString.length() - newlineIndex );
+          }
+          else {
+            line = listString;
+            listString = "";
+          }
 
-      std::string listString = ( char * ) responseVector.data();
-      while ( listString.compare( "" ) != 0 ) {
-        std::string line;
-        size_t newlineIndex = listString.find( '\n' );
-        if ( newlineIndex != std::string::npos ) {
-          line = listString.substr( 0, newlineIndex );
-          listString = listString.substr( newlineIndex + 1, listString.length() - newlineIndex );
-        }
-        else {
-          line = listString;
-          listString = "";
-        }
+          printf( "Parsing line(%s), listString(%s)\n", line.c_str(), listString.c_str() );
 
-        printf( "Parsing line(%s), listString(%s)\n", line.c_str(), listString.c_str() );
-
-        if ( line.find( "." ) == 0 && line.rfind( "." ) > line.find( "." ) && line.rfind( "." ) < line.length() - 1 ) {
-          std::string filename = line.substr( 1, line.rfind( "." ) - 1 );
-          printf( "List found filename(%s)\n", filename.c_str() );
-          int pieceNumber = std::stoi( line.substr( line.rfind( "." ) + 1, 1 ) );
-          fileMap[ filename ].insert( pieceNumber );
+          if ( line.find( "." ) == 0 && line.rfind( "." ) > line.find( "." ) &&
+               line.rfind( "." ) < line.length() - 1 ) {
+            std::string filename = line.substr( 1, line.rfind( "." ) - 1 );
+            printf( "List found filename(%s)\n", filename.c_str() );
+            int pieceNumber;
+            try {
+              pieceNumber = std::stoi( line.substr( line.rfind( "." ) + 1, 1 ).c_str() );
+            }
+            catch ( std::invalid_argument e ) {
+              printf( "Client invalid pieceNumber stoi(%s)\n", line.substr( line.rfind( "." ) + 1, 1 ).c_str() );
+              return;
+            }
+            catch ( std::out_of_range e ) {
+              printf( "Client out-of-range pieceNumber stoi(%s)\n", line.substr( line.rfind( "." ) + 1, 1 ).c_str() );
+              return;
+            }
+            fileMap[ filename ].insert( pieceNumber );
+          }
         }
       }
     }
@@ -393,83 +439,161 @@ void handleList( std::string command ) {
   closeSocket( sock );
 }
 
+/**
+ * @param pieceMap - mutable adds piece n to pieceMap[n] if found
+ * @param request
+ * @param serverIndex
+ * @return true if pieces were successfully found, false if error
+ */
+bool
+sendGetRequest( std::unordered_map<int, std::vector<unsigned char>> &pieceMap, std::string request, int serverIndex ) {
+
+  // Connect and handle request/response
+  int sock = connectToServer( serverIndex );
+  sendRequest( ( unsigned char * ) request.c_str(), request.length(), sock );
+  std::vector<unsigned char> response = getResponse( sock );
+  closeSocket( sock );
+
+//  printf( "Client got GET response\n" );
+  size_t readIndex = 0;
+  std::string buffer;
+
+  // Get the piece number for the first piece
+  buffer = "";
+  for ( ; response[ readIndex ] != ' '; readIndex++ ) {
+    buffer.push_back( response[ readIndex ] );
+  }
+//  printf( "Client read buffer during GET firstPieceNum(%s)", buffer.c_str() );
+  int firstPieceNumber = std::stoi( buffer );
+//  printf( "Client read piece(%d) from server(%d)\n", firstPieceNumber, serverIndex );
+  readIndex++;
+
+  // Get the piece number for the second piece
+  buffer = "";
+  for ( ; response[ readIndex ] != ' '; readIndex++ ) {
+    buffer.push_back( response[ readIndex ] );
+  }
+//  printf( "Client read buffer during GET secondPieceNum(%s)", buffer.c_str() );
+  int secondPieceNumber = std::stoi( buffer );
+//  printf( "Client read piece(%d) from server(%d)\n", secondPieceNumber, serverIndex );
+  readIndex++;
+
+  // Get the index for the first byte of the second piece
+  buffer = "";
+  for ( ; response[ readIndex ] != ' '; readIndex++ ) {
+    buffer.push_back( response[ readIndex ] );
+  }
+//  printf( "Client read buffer during GET firstPieceSize(%s)", buffer.c_str() );
+  readIndex++;
+  ssize_t splitIndex = std::stoi( buffer ) + readIndex;
+//  printf( "Client got splitIndex(%ld) from server(%d)\n", splitIndex, serverIndex );
+
+  // Read the first piece
+  std::vector<unsigned char> firstPiece;
+  for ( ; readIndex < splitIndex; readIndex++ ) {
+    firstPiece.push_back( response[ readIndex ] );
+  }
+//  readIndex++;
+  pieceMap[ firstPieceNumber ] = firstPiece;
+
+  // Read the second piece
+  std::vector<unsigned char> secondPiece;
+  for ( ; readIndex < response.size(); readIndex++ ) {
+    secondPiece.push_back( response[ readIndex ] );
+  }
+  pieceMap[ secondPieceNumber ] = secondPiece;
+
+  return true;
+}
+
 void handleGet( std::string command ) {
   printf( "handling get\n" );
-
-  int sock;
-  Response responses[4];
-
-  std::string request;
   std::string filename;
+  std::string path;
 
-  request = "GET " + config.username + ":" + config.password;
+  // Write authentication parameter to the request
+  std::string request = "GET " + config.username + ":" + config.password;
 
-  uint64_t fnStart, fnLength, pathStart, pathLength;
-  fnStart = command.find( " " ) + 1;
-  pathStart = command.rfind( " " ) + 1;
-  if ( pathStart != fnStart ) {
-    fnLength = pathStart - fnStart - 1;
-    pathLength = command.length() - pathStart;
-    request += " " + command.substr( pathStart, pathLength ) + " ";
-    filename = command.substr( fnStart, fnLength );
-    request += filename;
+  // Extract the filename and path from the command
+  uint64_t filenameStartIndex, filenameLength, pathStartIndex, pathLength;
+
+  // Look for starting indices
+  // Filename is the first parameter, look for the first whitespace
+  filenameStartIndex = command.find( " " ) + 1;
+  // Path is the second parameter, we look for the last whitespace
+  pathStartIndex = command.rfind( " " ) + 1;
+
+  if ( pathStartIndex != filenameStartIndex ) {
+    // We found a path (optional)
+    filenameLength = pathStartIndex - filenameStartIndex - 1;
+    pathLength = command.length() - pathStartIndex;
+    path = command.substr( pathStartIndex, pathLength );
+    filename = command.substr( filenameStartIndex, filenameLength );
+  }
+
+  else {
+    // We did not find a path
+    path = "/";
+    filename = command.substr( filenameStartIndex, command.length() - command.find( " " ) );
+  }
+
+  // If the last character of the filename is a newline, remove it.
+  if ( filename[ filename.length() - 1 ] == '\n' ) {
+    filename.pop_back();
+  }
+  if ( path[ path.length() - 1 ] == '\n' ) {
+    path.pop_back();
+  }
+
+//  printf( "GET found path(%s), filename(%s)\n", path.c_str(), filename.c_str() );
+  // Add path and filename to PUT request string
+  request += " " + path + " " + filename;
+
+
+  std::unordered_map<int, std::vector<unsigned char>> pieces;
+  // Get the file pieces.  Try servers 0&2 first, then try 1&3 if unsuccessful.
+  // If any two consecutive servers are down, the file is incomplete and the function returns early.
+  // Get pieces from server 0
+  if ( !sendGetRequest( pieces, request, 0 ) ) {
+    //If server 0 didn't respond get pieces from server 1
+    if ( !sendGetRequest( pieces, request, 1 ) ) { return; }
+    else {
+      //get piece from server 3
+      if ( !sendGetRequest( pieces, request, 3 ) ) { return; }
+    }
   }
   else {
-    filename = command.substr( fnStart, command.length() - command.find( " " ) );
-    request += filename;
-  }
-
-  request += " p";
-
-  // Request primary piece
-  for ( int i = 0; i < 4; i++ ) {
-    sock = connectToServer( i );
-    if ( sock != -1 ) {
-      sendRequest( ( unsigned char * ) request.c_str(), request.length(), sock );
-//      responses[ i ] = getResponse( sock );//
-      responses[ i ] = Response();
-      //TODO: UNBROKE THIS -- OH MY DIS SHIT BROKE
-    }
-    closeSocket( sock );
-  }
-
-  // Request secondary piece for any missing pieces.
-  // Print error and bail if secondary piece is not found.
-  request = request.substr( 0, request.length() - 2 ) + " s";
-  for ( int i = 0; i < 4; i++ ) {
-    if ( responses[ i ].header.find( "ERROR" ) == 0 ) {
-      for ( int j = 0; j < 4; j++ ) {
-        if ( j != i ) {
-          sock = connectToServer( j );
-          if ( sock != -1 ) {
-            sendRequest( ( unsigned char * ) request.c_str(), request.length(), sock );
-            //      responses[ i ] = getResponse( sock );//
-            responses[ i ] = Response();
-            //TODO: UNBROKE THIS
-          }
-          closeSocket( sock );
-        }
-
-        // If we found the secondary piece, stop looking
-        if ( responses[ i ].header.find( "ERROR" ) != 0 ) {
-          j = 5;
-        }
+    //Get pieces from server 2
+    if ( !sendGetRequest( pieces, request, 2 ) ) {
+      //If server 2 didn't respond get pieces from server 1&3
+      if ( !sendGetRequest( pieces, request, 1 ) ) { return; }
+      else {
+        // get piece from server 3
+        if ( !sendGetRequest( pieces, request, 3 ) ) { return; }
       }
     }
-
-    if ( responses[ i ].header.find( "ERROR" ) == 0 ) {
-      printf( "File is incomplete.\n" );
-      return;
-    }
   }
 
+  // Write the pieces to a temporary encrypted file
+  std::ofstream ofs( ".NEW" + filename, std::ios::out | std::ofstream::binary );
   for ( int i = 0; i < 4; i++ ) {
-    // TODO:  Reconstruct pieces
-  }
+    printf( "Concatenating piece(%d):(", i );
+    for ( int j = 0; j < pieces[ i ].size(); j++ ) {
+      printf( "%02X", pieces[ i ][ j ] );
+      if ( ( j + 1 ) % 2 == 0 ) {
+        printf( " " );
+      }
+    }
+    printf( ")\n" );
 
-  // TODO: write response to .filename
+    std::copy( pieces[ i ].begin(), pieces[ i ].end(), std::ostreambuf_iterator<char>( ofs ) );
+  }
+  ofs.close();
+
   decryptFile( filename );
-  // TODO: delete .filename
+  // Delete the temporary file
+//  remove( ( ".NEW" + filename ).c_str() );
+
 }
 
 void handlePut( std::string command ) {
@@ -493,7 +617,7 @@ void handlePut( std::string command ) {
     // We found a path (optional)
     filenameLength = pathStartIndex - filenameStartIndex - 1;
     pathLength = command.length() - pathStartIndex;
-    path = command.substr( pathStartIndex, pathLength ) + " ";
+    path = command.substr( pathStartIndex, pathLength );
     filename = command.substr( filenameStartIndex, filenameLength );
   }
 
@@ -507,7 +631,11 @@ void handlePut( std::string command ) {
   if ( filename[ filename.length() - 1 ] == '\n' ) {
     filename.pop_back();
   }
+  if ( path[ path.length() - 1 ] == '\n' ) {
+    path.pop_back();
+  }
 
+//  printf( "PUT found path(%s), filename(%s)\n", path.c_str(), filename.c_str() );
   // Add path and filename to PUT request string
   request += " " + path + " " + filename;
 
@@ -532,8 +660,8 @@ void handlePut( std::string command ) {
   fileSize = ftell( filePointer );
   fseek( filePointer, 0, SEEK_SET );
   filePieceLength = ( size_t ) ceil( ( ( double ) fileSize ) / 4.0 );
-  printf( "Found fileSize(%ld), fileSize/4(%ld), ceil(%lf) filePieceLength(%ld)\n",
-          fileSize, fileSize / 4, ceil( fileSize / 4 ), filePieceLength );
+  printf( "Found fileSize(%ld), fileSize/4(%ld), ceil(%lf) filePieceLength(%ld)\n", fileSize, fileSize / 4,
+          ceil( fileSize / 4 ), filePieceLength );
 
   // Allocate memory for the file and read it
   unsigned char fileBuffer[fileSize];
@@ -541,16 +669,15 @@ void handlePut( std::string command ) {
   unsigned char *filePieceBuffer = fileBuffer;
 
   // Print file in hex for debugging
-  printf( "Read file into memory:\n" );
+  printf( "Read file into memory(" );
   for ( int i = 0; i < fileSize; i++ ) {
     printf( "%02X", fileBuffer[ i ] );
   }
-  printf( "\n" );
+  printf( ")\n" );
 
   size_t fileSizeSent = 0;
   for ( int i = 0; i < 4; i++ ) {
-    printf( "primaryServer(%d), fileSizeSent(%ld), filePieceLength(%ld), fileSize(%ld)\n", ( i + bin ) % 4,
-            fileSizeSent, filePieceLength, fileSize );
+    //printf( "primaryServer(%d), fileSizeSent(%ld), filePieceLength(%ld), fileSize(%ld)\n", ( i + bin ) % 4, fileSizeSent, filePieceLength, fileSize );
 
     // Connect to the appropriate servers
     int primarySock = connectToServer( ( i + bin ) % 4 );
@@ -559,6 +686,15 @@ void handlePut( std::string command ) {
     if ( primarySock != -1 ) {
       // Add the piece number to the request
       std::string pieceRequestString = request + " " + std::to_string( i ) + "\n";
+
+      printf( "Sending piece(%i)(", i );
+      for ( int j = 0; j < filePieceLength; j++ ) {
+        printf( "%02X", filePieceBuffer[ j ] );
+        if ( ( j + 1 ) % 2 == 0 ) {
+          printf( " " );
+        }
+      }
+      printf( ")\n" );
 
       // Concatenate the request and the data
       unsigned char message[pieceRequestString.length() + filePieceLength];
@@ -586,21 +722,21 @@ void handlePut( std::string command ) {
   }
 
   // Delete the temporary file
-  remove( ( filename ).c_str() );
+//  remove( ( filename ).c_str() );
 
   // Close the file
   fclose( filePointer );
 }
 
 void handleMkDir( std::string command ) {
-  printf( "Handling mkdir" );
+  printf( "Handling mkdir\n" );
   // Write authentication parameter to the request
-  command.insert( command.find(' '), " " + config.username + ":" + config.password );
+  command.insert( command.find( ' ' ), " " + config.username + ":" + config.password );
 
   // Send command to each server
   for ( int i = 0; i < 4; i++ ) {
     int sock = connectToServer( i );
-    sendRequest( (unsigned char*) command.c_str(), command.length(), sock );
+    sendRequest( ( unsigned char * ) command.c_str(), command.length(), sock );
     closeSocket( sock );
   }
 }
@@ -625,7 +761,19 @@ int getBinForFile( std::string filename ) {
 
   // close file
   pclose( fp );
-  return std::stoi( buf );
+  int ret;
+  try {
+    ret = std::stoi( buf );
+  }
+  catch ( std::invalid_argument e ) {
+    printf( "Client invalid of buf stoi(%s)\n", buf );
+    return -1;
+  }
+  catch ( std::out_of_range e ) {
+    printf( "Client out-of-range of buf stoi(%s)\n", buf );
+    return -1;
+  }
+  return ret;
 }
 
 void encryptFile( std::string filename ) {
@@ -642,7 +790,8 @@ void encryptFile( std::string filename ) {
 
 void decryptFile( std::string filename ) {
   // encrypt the file in tempfile .filename
-  std::string command = "openssl aes-256-cbc -d -in ." + filename + " -out " + filename + " -pass file:enc.key";
+  std::string command = "openssl aes-256-cbc -d -in .NEW" + filename + " -out NEW." + filename + " -pass file:enc.key";
+  printf( "Client running decrypt(%s)\n", command.c_str() );
   FILE *fp = popen( command.c_str(), "r" );
   if ( fp == NULL ) {
     perror( "Problem running decryptFile:" );

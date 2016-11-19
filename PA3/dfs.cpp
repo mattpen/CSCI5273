@@ -66,7 +66,7 @@ void saveVectorToFile( std::vector<unsigned char> data, std::string filename );
 
 void handleListResponse( Request request, int sock );
 
-Response handleGetResponse( Request request );
+void handleGetResponse( Request request, int sock );
 
 void handlePutResponse( Request request );
 
@@ -103,7 +103,19 @@ int main( int argc, char *argv[] ) {
   //Prepare the sockaddr_in structure
   server.sin_family = AF_INET;
   server.sin_addr.s_addr = INADDR_ANY;
-  server.sin_port = htons( ( uint16_t ) std::stoi( argv[ 2 ] ) );
+  uint16_t portNum;
+  try {
+    portNum = htons( ( uint16_t ) std::stoi( argv[ 2 ] ) );
+  }
+  catch ( std::invalid_argument e ) {
+    printf( "Server(%s) invalid port stoi(%s)", directory.c_str(), argv[ 2 ] );
+    return 1;
+  }
+  catch ( std::out_of_range e ) {
+    printf( "Server(%s) out-of-range port stoi(%s)", directory.c_str(), argv[ 2 ] );
+    return 1;
+  }
+  server.sin_port = portNum;
 
   //Bind
   if ( bind( socket_desc, ( struct sockaddr * ) &server, sizeof( server ) ) < 0 ) {
@@ -164,7 +176,7 @@ void *requestCycle( void *socket_desc ) {
       handleListResponse( request, sock );
     }
     else if ( request.method.compare( "GET" ) == 0 ) {
-//      handleGetResponse( request, sock );
+      handleGetResponse( request, sock );
     }
     else if ( request.method.compare( "PUT" ) == 0 ) {
       handlePutResponse( request );
@@ -202,6 +214,7 @@ void sendResponse( unsigned char *request, size_t request_size, int sock ) {
   while ( sizeString.length() < 16 ) {
     sizeString = " " + sizeString;
   }
+  printf( "Server(%s) sending sizeMessage(%s)\n", directory.c_str(), sizeString.c_str() );
   send( sock, sizeString.c_str(), 16, 0 );
 
   unsigned char *send_buffer = request;
@@ -229,7 +242,18 @@ std::vector<unsigned char> getRequest( int sock ) {
   bzero( sizeMessage, SIZE_MESSAGE_SIZE );
 
   recv( sock, sizeMessage, SIZE_MESSAGE_SIZE - 1, 0 );
-  ssize_t messageSize = std::stoi( std::string( sizeMessage ) );
+  ssize_t messageSize;
+  try {
+    messageSize = std::stoi( std::string( sizeMessage ) );
+  }
+  catch ( std::invalid_argument e ) {
+    printf( "Server(%s) invalid stoi(%s)", directory.c_str(), sizeMessage );
+    return std::vector<unsigned char>();
+  }
+  catch ( std::out_of_range e ) {
+    printf( "Server(%s) out-of-range stoi(%s)", directory.c_str(), sizeMessage );
+    return std::vector<unsigned char>();
+  }
   printf( "Client getting message of len(%s)(%ld)", sizeMessage, messageSize );
 
   unsigned char clientMessage[MSG_SIZE];
@@ -359,6 +383,9 @@ Request parseRequest( std::vector<unsigned char> requestData ) {
     // Strip any tailing newline
     request.path = request.path.substr( 0, request.path.length() - 1 );
   }
+  if ( request.path[ 0 ] == '/' ) {
+    request.path = request.path.substr( 1, request.path.length() - 1 );
+  }
   printf( "Server %s parsing request. Found path=:%s:\n", directory.c_str(), request.path.c_str() );
 
   // User should not be able to view parent directory!
@@ -389,13 +416,34 @@ Request parseRequest( std::vector<unsigned char> requestData ) {
     return request;
   }
 
+  if ( request.method.compare( "GET" ) == 0 ) {
+    return request;
+  }
+
   start = end + 1;
   if ( start >= requestString.length() ) {
     request.error = "MISSING_PIECE_TOKEN";
     return request;
   }
 
-  request.pieceNumber = std::stoi( requestString.substr( start, 1 ) );
+
+  int pieceNumber;
+  try {
+    pieceNumber = std::stoi( requestString.substr( start, 1 ).c_str() );
+  }
+  catch ( std::invalid_argument e ) {
+    printf( "Server(%s) invalid pieceNumber stoi(%s)", directory.c_str(), requestString.substr( start, 1 ).c_str() );
+    request.error = "Invalid pieceNumber";
+    return request;
+  }
+  catch ( std::out_of_range e ) {
+    printf( "Server(%s) out-of-range pieceNumber stoi(%s)", directory.c_str(),
+            requestString.substr( start, 1 ).c_str() );
+    request.error = "Invalid pieceNumber";
+    return request;
+  }
+  request.pieceNumber = pieceNumber;
+
   printf( "Server %s parsing request. Found piece#=:%d:\n", directory.c_str(), request.pieceNumber );
   if ( request.pieceNumber < 0 || request.pieceNumber > 3 ) {
     request.error = "BAD_PIECE_TOKEN";
@@ -410,7 +458,6 @@ Request parseRequest( std::vector<unsigned char> requestData ) {
 
   return request;
 }
-
 
 void handleListResponse( Request request, int sock ) {
 
@@ -438,32 +485,59 @@ void handleListResponse( Request request, int sock ) {
   pclose( fp );
 }
 
-Response handleGetResponse( Request request ) {
-  // TODO: dis shit so broke
-  Response response;
-  std::string localFilename =
-    directory + "/." + request.path + "/" + request.filename
-    + "." + std::to_string( request.pieceNumber );
-  response.body = loadFileToVector( localFilename );
-  if ( response.body.size() > 0 ) {
-    response.header = "SUCCESS " + localFilename + " " + std::to_string( response.body.size() );
+void handleGetResponse( Request request, int sock ) {
+
+  std::string localFilename = "." + directory + request.path + "/." + request.filename;
+  std::vector<unsigned char> data1;
+  std::vector<unsigned char> data2;
+  std::string header = "";
+  printf( "Server(%s) trying to GET localFile(%s)\n", directory.c_str(), localFilename.c_str() );
+
+  // Look for potential filepieces
+  for ( int i = 0; i < 4; i++ ) {
+    printf( "Server(%s) looking for(%s)\n", directory.c_str(), ( localFilename + "." + std::to_string( i ) ).c_str() );
+    std::vector<unsigned char> temp = loadFileToVector( localFilename + "." + std::to_string( i ) );
+    if ( temp.data() != NULL ) {
+      printf( "Server(%s) found pieceNumber(%d)\n", directory.c_str(), i );
+      header += std::to_string( i ) + " ";
+      if ( data1.data() == NULL ) {
+        data1 = temp;
+      }
+      else {
+        data2 = temp;
+        i = 5;
+      }
+    }
+    else {
+      printf( "Server(%s) did not find pieceNumber(%d)\n", directory.c_str(), i );
+    }
   }
-  else {
-    response.header = "ERROR: FILE NOT FOUND";
-  }
-  return response;
+
+  // Write the size of the first piece, second piece size is implicit
+  header += std::to_string( data1.size() ) + " ";
+  printf( "Server(%s) sending get response with header(%s)\n", directory.c_str(), header.c_str() );
+
+  ssize_t outLength = header.length() + data1.size() + data2.size();
+  unsigned char out[ outLength];
+  std::copy( ( unsigned char * ) header.c_str(),
+             ( unsigned char * ) header.c_str() + header.length(), out );
+  std::copy( data1.data(), data1.data() + data1.size(), out + header.length() );
+  std::copy( data2.data(), data2.data() + data2.size(), out + header.length() + data1.size() );
+
+
+  sendResponse( out, outLength, sock );
 }
 
 void handlePutResponse( Request request ) {
   printf( "Server (%s) handling put", directory.c_str() );
   std::string localFilename =
-    "." + directory + request.path + "." + request.filename
+    "." + directory + request.path + "/." + request.filename
     + "." + std::to_string( request.pieceNumber );
   saveVectorToFile( request.data, localFilename );
 }
 
 void handleMkdirResponse( Request request ) {
-  std::string fullPath = "." + directory + "/" + request.path;
+  std::string fullPath = "." + directory + "/e" + request.path;
   mkdir( fullPath.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH );
 }
 
