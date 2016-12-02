@@ -10,7 +10,6 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <memory.h>
-#include <math.h>
 #include <openssl/sha.h>
 
 #include <fstream>
@@ -18,6 +17,7 @@
 #include <vector>
 #include <set>
 #include <unordered_map>
+#include <netdb.h>
 
 #define MSG_SIZE 8000
 #define SIZE_MESSAGE_SIZE 17
@@ -29,7 +29,7 @@ struct Request {
     std::string version;
     std::unordered_map<std::string, std::string> headers;
     std::string data;
-    std::string filetype;
+    std::string fileext;
     std::string error;
     Request *next;
 };
@@ -57,7 +57,7 @@ int main( int argc, char *argv[] ) {
   }
   int port = atoi( argv[ 1 ] );
 
-  int serverSocket, clientSocket, c;
+  int serverSocket, clientSocket, c, *tempSocket;
   struct sockaddr_in serverSockaddr_in, clientSockaddr_in;
 
   // Create socket
@@ -92,15 +92,19 @@ int main( int argc, char *argv[] ) {
   clientSocket = accept( serverSocket, ( struct sockaddr * ) &clientSockaddr_in, ( socklen_t * ) &c );
 
   while ( clientSocket ) {
-    printf( "Socket accepted.\n" );
-
     if ( clientSocket < 0 ) {
       perror( "accept failed" );
       continue;
     }
 
-    requestCycle( clientSocket );
-    printf( "Listening...\n" );
+    pthread_t sniffer_thread;
+    tempSocket = ( int * ) malloc( 4 );
+    *tempSocket = clientSocket;
+
+    if ( pthread_create( &sniffer_thread, NULL, requestCycle, ( void * ) tempSocket ) < 0 ) {
+      perror( "could not create thread" );
+      return 1;
+    }
     clientSocket = accept( serverSocket, ( struct sockaddr * ) &clientSockaddr_in, ( socklen_t * ) &c );
   }
 
@@ -156,17 +160,86 @@ void *crawlPage( void *hashArg ) {
   // parse through cacheData[ hash ] and pre-fetch hrefs
 }
 
-std::vector<unsigned char> fetchResponse( std::string host, std::vector<unsigned char> requestData ) {
+std::vector<unsigned char> fetchResponse( std::string host, std::string httpVersion, std::vector<unsigned char> requestData ) {
   std::vector<unsigned char> response = std::vector<unsigned char>();
 
-  // open a new socket to the host/port
-  // send the requestData
-  // recv the response and pack it in a vector
-  
+  struct sockaddr_in server;
+  int newSock = socket( AF_INET, SOCK_STREAM, 0 );
+  if ( newSock == -1 ) {
+    printf( "Could not connect to socket for host(%s)", host.c_str() );
+    return response;
+  }
+
+  // Add a 1 second timeout
+  struct timeval timeout;
+  timeout.tv_sec = 1;
+  timeout.tv_usec = 0;
+  if ( setsockopt( newSock, SOL_SOCKET, SO_RCVTIMEO, ( char * ) &timeout, sizeof( timeout ) ) < 0 ) {
+    printf( "Could not set socket timeout for host(%s)\n", host.c_str() );
+    return response;
+  }
+  if ( setsockopt( newSock, SOL_SOCKET, SO_SNDTIMEO, ( char * ) &timeout, sizeof( timeout ) ) < 0 ) {
+    printf( "Could not set socket timeout for host(%s)\n", host.c_str() );
+    return response;
+  }
+
+  // Allow client to reuse port/addr if in TIME_WAIT state
+  int enable = 1;
+  if ( setsockopt( newSock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof( int ) ) < 0 ) {
+    printf( "Could not reuse socket for host(%s)\n", host.c_str() );
+    return response;
+  }
+
+  int port = 80;
+  size_t delimiterPosition = host.find( ":" );
+  if ( delimiterPosition != std::string::npos && delimiterPosition < host.length() ) {
+    port = std::stoi( host.substr( delimiterPosition + 1, host.length() - delimiterPosition + 1 ) );
+    host = host.substr( 0, delimiterPosition );
+  }
+
+  server.sin_addr.s_addr = inet_addr( gethostbyname( host.c_str() )->h_addr_list[ 0 ] );
+  server.sin_family = AF_INET;
+  server.sin_port = htons( ( uint16_t ) port );
+
+  if ( connect( newSock, ( struct sockaddr * ) &server, sizeof( server ) ) < 0 ) {
+    printf( stderr, "Connect failed for host(%s). Error: %d\n", host, errno );
+    return response;
+  }
+
+  ssize_t bytesToSend = requestData.size();
+  unsigned char *sendBuffer = requestData.data();
+
+  while ( bytesToSend > 0 ) {
+    ssize_t bytesSent = send( newSock, sendBuffer, requestData.size(), 0 );
+    bytesToSend -= bytesSent;
+    sendBuffer += bytesSent;
+
+    if ( bytesSent < 0 ) {
+      perror( "Error sending get request to host(%s)\n", host );
+    }
+  }
+
+  char readBuffer[MSG_SIZE];
+  bzero( readBuffer, MSG_SIZE );
+  ssize_t bytesReceived = recv( newSock, readBuffer, MSG_SIZE - 1, 0 );
+  while ( bytesReceived > 0 ) {
+    response.insert( response.end(), readBuffer, readBuffer + bytesReceived );
+    bzero( readBuffer, MSG_SIZE );
+    bytesReceived = recv( newSock, readBuffer, MSG_SIZE - 1, 0 );
+    // TODO: implement detecting end of HTTP/1.1 responses
+  }
+
+  if ( bytesReceived == -1 ) {
+    printf( "recv failed for host(%s)\n" );
+  }
+
   return response;
 }
 
-void requestCycle( int clientSocket ) {
+void *requestCycle( void *incomingSocket ) {
+  //Get the socket descriptor
+  int clientSocket = *( int * ) incomingSocket;
+
   std::vector<unsigned char> requestData = getRequest( clientSocket );
   Request *request = parseRequest( requestData.data(), requestData.size() );
 
@@ -181,16 +254,19 @@ void requestCycle( int clientSocket ) {
   time( &currentTime );
 
   if ( cacheData.find( hash ) == cacheData.end() || cacheExpireTime[ hash ] < currentTime ) {
-    std::vector<unsigned char> responseData = fetchResponse( request->headers[ "Host" ], requestData );
+    std::vector<unsigned char> responseData = fetchResponse( request->headers[ "Host" ], request->version, requestData );
     cacheData[ hash ] = responseData;
     cacheExpireTime[ hash ] = currentTime + CACHE_TTL;
     sendResponse( responseData, clientSocket );
     closeSocket( clientSocket );
 
-    pthread_t crawler_thread;
-    if ( pthread_create( &crawler_thread, NULL, crawlPage, ( void * ) hash ) < 0 ) {
-      perror( "could not create thread" );
-      exit( 1 );
+    // If the response wasn't an html page, there probably aren't any crawlable links
+    if ( request->fileext.compare(".html") == 0 ) {
+      pthread_t crawler_thread;
+      if ( pthread_create( &crawler_thread, NULL, crawlPage, ( void * ) hash ) < 0 ) {
+        perror( "could not create thread" );
+        exit( 1 );
+      }
     }
   }
   else {
@@ -265,31 +341,17 @@ Request *parseRequest( unsigned char *requestString, unsigned long requestString
     i++;
   }
 
-//  //This shouldn't be needed for proxy
-//  //Check for directory request
-//  fileext = "";
-//  try {
-//    fileext = request->uri.substr( request->uri.rfind( "." ), request->uri.length() - request->uri.rfind( "." ) );
-//  }
-//  catch ( std::out_of_range &exc ) {
-//    // No file extension found, assume directory access requested, append / if necessary and append default webpage
-//    fileext = ".html";
-//    if ( request->uri[ request->uri.length() - 1 ] != '/' ) {
-//      request->uri.append( "/" );
-//    }
-//    request->uri.append( config.index );
-//  }
-//
-//  // Check filetype
-//  try {
-//    request->filetype = config.filetypes.at( fileext );
-//  }
-//  catch ( std::out_of_range &exc ) {
-//    request->error = "HTTP/1.0 501 Not Implemented\n\n<html><body>501 Not Implemented Reason Filetype not supported: ";
-//    request->error.append( fileext );
-//    request->error.append( "</body></html>" );
-//    return request;
-//  }
+  //This shouldn't be needed for proxy
+  //Check for directory request
+  request->filext = "";
+  try {
+    request->filext = request->uri.substr( request->uri.rfind( "." ), request->uri.length() - request->uri.rfind( "." ) );
+  }
+  catch ( std::out_of_range &exc ) {
+    request->filext = ".html";
+  }
+
+
 
   // move to version
   while ( i < requestString_len && isWhiteSpace( requestString[ i ] ) ) {
