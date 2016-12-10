@@ -23,7 +23,7 @@
 
 #define MSG_SIZE 80000
 #define SIZE_MESSAGE_SIZE 17
-#define CACHE_TTL 300
+
 
 typedef unsigned char BYTE;
 typedef std::vector<BYTE> ByteVector;
@@ -43,11 +43,13 @@ struct Request {
 struct CachedResponse {
     ByteVector data;
     String host;
+    String uri;
     time_t expireTime;
     std::mutex lock;
 };
 
-//std::unordered_map<BYTE *, CachedResponse *> cache;
+int CACHE_TTL = 300;
+
 std::unordered_map<String, CachedResponse *> cache;
 
 bool isWhiteSpace( char c );
@@ -68,6 +70,8 @@ void *cleanCache( void * );
 
 void closeSocket( int fd );
 
+void putInCache( String key, CachedResponse *cachedResponse );
+
 ByteVector fetchResponse( String host, String httpVersion, ByteVector requestData );
 
 ByteVector getRequest( int sock );
@@ -78,13 +82,22 @@ int getSO_ERROR( int fd );
 
 void closeSocket( int fd );
 
-
+//////////////
+//////
+////// MAIN
+//////
+//////////////
 int main( int argc, char *argv[] ) {
-  if ( argc != 2 ) {
-    printf( "USAGE: webproxy <server_port>\n" );
+  if ( argc < 2  || argc > 3) {
+    printf( "USAGE: webproxy <server_port> [<cache_timeout>]\n" );
     exit( 1 );
   }
   int port = atoi( argv[ 1 ] );
+
+  if ( argc == 3 ) {
+    CACHE_TTL = atoi( argv[2] );
+    printf("Setting cache ttl to %d\n", CACHE_TTL);
+  }
 
   int serverSocket, clientSocket, c, *tempSocket;
   struct sockaddr_in serverSockaddr_in, clientSockaddr_in;
@@ -117,14 +130,14 @@ int main( int argc, char *argv[] ) {
   listen( serverSocket, 3 );
   c = sizeof( struct sockaddr_in );
 
-  printf( "Listening...\n" );
+  printf( "Listening on port %d ...\n", port );
   clientSocket = accept( serverSocket, ( struct sockaddr * ) &clientSockaddr_in, ( socklen_t * ) &c );
 
-  pthread_t cacheCleaner;
-  if ( pthread_create( &cacheCleaner, NULL, cleanCache, NULL ) < 0 ) {
-    perror( "could not create thread" );
-    return 1;
-  }
+//  pthread_t cacheCleaner;
+//  if ( pthread_create( &cacheCleaner, NULL, cleanCache, NULL ) < 0 ) {
+//    perror( "could not create thread" );
+//    return 1;
+//  }
 
   while ( clientSocket ) {
     if ( clientSocket < 0 ) {
@@ -144,24 +157,38 @@ int main( int argc, char *argv[] ) {
   }
 }
 
+/**
+ * Threadsafe method for storing new response to the cache
+ *
+ * @param key
+ * @param cachedResponse
+ */
 void putInCache( String key, CachedResponse *cachedResponse ) {
-  // Add the entry to the cache
+  // Update an expired entry in the cache
   if ( cache.find( key ) != cache.end() ) {
     printf( "Updating key(%s) in cache\n", key.c_str() );
     std::lock_guard<std::mutex> newLock( cache[ key ]->lock );
     cache[ key ] = cachedResponse;
   }
+
+    // Add a new entry to the cache
   else {
     printf( "Adding key(%s) to cache\n", key.c_str() );
     cache[ key ] = cachedResponse;
   }
 }
 
+/**
+ * This thread is usually sleeping
+ * It wakes up and clears unused entries from the cache every 2*TTL
+ *
+ * @param arg - unused, required for pthread
+ * @return unused, required for pthread
+ */
 void *cleanCache( void *arg ) {
   while ( true ) {
-    sleep( CACHE_TTL * 2 );
+    sleep( CACHE_TTL );
     printf( "Clearing cache\n" );
-    // Delete expired cache entries
     time_t currentTime;
     time( &currentTime );
     typedef std::unordered_map<String, CachedResponse *>::iterator it_type;
@@ -174,6 +201,13 @@ void *cleanCache( void *arg ) {
   }
 }
 
+/**
+ * Reads a request from a client specified by sock.
+ * TODO: implement overflow checking/handling
+ *
+ * @param sock
+ * @return
+ */
 ByteVector getRequest( int sock ) {
   BYTE clientMessage[MSG_SIZE];
   ByteVector request = ByteVector();
@@ -181,9 +215,12 @@ ByteVector getRequest( int sock ) {
   bzero( clientMessage, MSG_SIZE );
   ssize_t readSize = recv( sock, clientMessage, MSG_SIZE - 1, 0 );
 
+  // Log the first line of the request
   printf( "Read(%ld): ", readSize );
   for ( int i = 0; clientMessage[ i ] != '\n' && i < readSize; i++ ) { printf( "%c", clientMessage[ i ] ); }
   printf( "\n" );
+
+  // Handle errors
   if ( readSize == -1 ) {
     char err[6] = "ERROR";
     printf( "recv error" );
@@ -191,11 +228,19 @@ ByteVector getRequest( int sock ) {
     perror( "recv failed" );
     return request;
   }
+
   request.insert( request.end(), clientMessage, clientMessage + readSize );
 
   return request;
 }
 
+
+/**
+ * Sends an http response to a client specified by sock
+ *
+ * @param response
+ * @param sock
+ */
 void sendResponse( ByteVector response, int sock ) {
   BYTE *sendBuffer = response.data();
   size_t responseSizeRemaining = response.size();
@@ -210,20 +255,24 @@ void sendResponse( ByteVector response, int sock ) {
 }
 
 /**
+ * Gets thread-safe data from cache for non-time-sensitive crawling
+ *
  * @param hash - key for the cache
  * @param page - this function writes the cached response data to this string
  * @param host - this function writes the cache host to this string
  */
-void getHostAndDataFromCacheForCrawling( String key, String *page, String *host ) {
+void getHostUriAndDataFromCacheForCrawling( String key, String *page, String *host, String *uri ) {
   std::lock_guard<std::mutex> lock( cache[ key ]->lock );
   CachedResponse *cachedResponse = cache[ key ];
   *page = ( char * ) cachedResponse->data.data();
   *host = cachedResponse->host;
+  *uri = cachedResponse->uri;
 }
 
 
 /**
  * Main thread function for prefetching links in a page
+ *
  * @param hashArg - points to a SHA-256 BYTE[]
  */
 void *crawlPage( void *hashArg ) {
@@ -233,12 +282,15 @@ void *crawlPage( void *hashArg ) {
   String page;
   String host;
   String originalHost;
-  getHostAndDataFromCacheForCrawling( key, &page, &originalHost );
+  String originalUri;
+  getHostUriAndDataFromCacheForCrawling( key, &page, &originalHost, &originalUri );
 
+  // Invariant for progressing through the crawled page
   size_t minIndex = 0;
-  time_t currentTime;
 
+  // Parse through the files, looking for URI data within tags (href and src attributes)
   while ( minIndex < page.length() ) {
+
     // Look for the next html tag, enclosed by <>
     // Stop processing if no more tags found
     size_t nextLAngle = page.find( "<", minIndex );
@@ -246,33 +298,42 @@ void *crawlPage( void *hashArg ) {
     size_t nextRAngle = page.find( ">", nextLAngle );
     if ( nextRAngle == String::npos ) { break; }
     String tag = page.substr( nextLAngle, nextRAngle - nextLAngle + 1 );
-    printf( "Crawler found a tag: %s\n", tag.c_str() );
 
-    // Update the loop variable
+    // Fast forward the loop variable to past the closing tag
     minIndex = nextRAngle + 1;
 
     // Get the content of href or src attributes, if present
     size_t nextItem = std::min( tag.find( "href=\"" ), tag.find( "src=\"" ) );
     size_t hrefBegin = tag.find( "\"", nextItem );
     size_t hrefEnd = tag.find( "\"", hrefBegin + 1 );
-    printf( "Crawler found href indices: %ld, %ld, %ld\n", nextItem, hrefBegin, hrefEnd);
 
     // If the item found is within the current tag, process it
     if ( hrefEnd >= hrefBegin
          && hrefBegin != String::npos
          && hrefEnd != String::npos ) {
 
-      // TODO: some links are missing / or relative path, maybe we can get this from the Request object?
-      // Construct the request string
+      // Parse the url from the tag
       String url = tag.substr( hrefBegin + 1, hrefEnd - hrefBegin - 1 );
-      printf( "Crawler found an href: %s\n", url.c_str() );
 
-      if ( url.find( "#" ) == 0 ) { continue; } // Don't prefetch same page anchors
+      // Don't prefetch same page anchors
+      if ( url.find( "#" ) == 0 ) {
+
+        continue;
+      }
+
+        // If we found a relative path, prepend the current location (using the original url as the best guess)
+      else if ( url[ 0 ] != '/' && url.find( "http://" ) != 0 && url.find( "https://" ) != 0 ) {
+
+        originalUri = originalUri.substr( 0, originalUri.rfind( "/" ) + 1 );
+        url = originalUri + url;
+      }
+
+      // Construct the HTTP request, we use HTTP/1.0 by default for simplicity's sake
       String requestString = "GET " + url + " HTTP/1.0\n\n";
-      printf( "Crawler created request: %s\n", requestString.c_str() );
       ByteVector requestData = ByteVector( requestString.begin(), requestString.end() );
 
-      // If the uri is external to the page, find the host, otherwise assume the link is relative
+      // If the uri is external to the page, find the host from the uri,
+      // otherwise assume the link is relative
       if ( url.find( "http://" ) == 0 || url.find( "https://" ) == 0 ) {
         size_t hostStart = url.find( "//" ) + 2;
         size_t hostEnd = url.find( "/", hostStart );
@@ -288,25 +349,24 @@ void *crawlPage( void *hashArg ) {
       String newKey = getKey( host, url );
       SHA256( ( BYTE * ) key.c_str(), key.length(), newHash );
 
-      printf( "Crawler created key for request: %s\n", newKey.c_str() );
-
-      time( &currentTime );
 
       // If the uri is not cached or the cache is expired, add to cache
+      time_t currentTime;
+      time( &currentTime );
       if ( cache.find( newKey ) == cache.end() || cache[ newKey ]->expireTime < currentTime ) {
-        printf( "Crawler getting request: %s\n", requestData.data() );
+
         // Get the response
         ByteVector response = fetchResponse( host, "HTTP/1.0", requestData );
 
         // If we got a response cache it
         if ( response.size() > 0 ) {
-          printf( "Crawler adding cache for key: %s\n", newKey.c_str() );
 
           // Create new cached entry
           CachedResponse *newResponse = new CachedResponse();
           newResponse->data = response;
           newResponse->expireTime = currentTime + CACHE_TTL;
           newResponse->host = host;
+          newResponse->uri = url;
 
           putInCache( newKey, newResponse );
         }
@@ -314,13 +374,21 @@ void *crawlPage( void *hashArg ) {
     }
   }
 
-  printf( "done crawling page(%s)\n", host.c_str() );
   return 0;
 }
 
+/**
+ * Get an HTTP response from a remote server
+ *
+ * @param host - Remote hostname or ip addr
+ * @param httpVersion - Request version, used to determine tcp disconnect method
+ * @param requestData - original request to send
+ * @return HTTP response
+ */
 ByteVector fetchResponse( String host, String httpVersion, ByteVector requestData ) {
   ByteVector response = ByteVector();
 
+  // Create the socket for the remote connection
   struct sockaddr_in server;
   int newSock = socket( AF_INET, SOCK_STREAM, 0 );
   if ( newSock == -1 ) {
@@ -328,18 +396,18 @@ ByteVector fetchResponse( String host, String httpVersion, ByteVector requestDat
     return response;
   }
 
-  // Add a 1 second timeout
-  struct timeval timeout;
-  timeout.tv_sec = 1;
-  timeout.tv_usec = 0;
-  if ( setsockopt( newSock, SOL_SOCKET, SO_RCVTIMEO, ( char * ) &timeout, sizeof( timeout ) ) < 0 ) {
-    printf( "Could not set socket timeout for host(%s)\n", host.c_str() );
-    return response;
-  }
-  if ( setsockopt( newSock, SOL_SOCKET, SO_SNDTIMEO, ( char * ) &timeout, sizeof( timeout ) ) < 0 ) {
-    printf( "Could not set socket timeout for host(%s)\n", host.c_str() );
-    return response;
-  }
+//  // Add a 1 second timeout
+//  struct timeval timeout;
+//  timeout.tv_sec = 1;
+//  timeout.tv_usec = 0;
+//  if ( setsockopt( newSock, SOL_SOCKET, SO_RCVTIMEO, ( char * ) &timeout, sizeof( timeout ) ) < 0 ) {
+//    printf( "Could not set socket timeout for host(%s)\n", host.c_str() );
+//    return response;
+//  }
+//  if ( setsockopt( newSock, SOL_SOCKET, SO_SNDTIMEO, ( char * ) &timeout, sizeof( timeout ) ) < 0 ) {
+//    printf( "Could not set socket timeout for host(%s)\n", host.c_str() );
+//    return response;
+//  }
 
   // Allow client to reuse port/addr if in TIME_WAIT state
   int enable = 1;
@@ -349,6 +417,7 @@ ByteVector fetchResponse( String host, String httpVersion, ByteVector requestDat
   }
 
   // Find port, if specified in the host string
+  // Assume 80 otherwise
   int port = 80;
   std::string temp = host;
   if ( host.find( "http" ) == 0 ) {
@@ -360,24 +429,41 @@ ByteVector fetchResponse( String host, String httpVersion, ByteVector requestDat
     host = host.substr( 0, delimiterPosition );
   }
 
+  // Host was not provided in headers, parse through the requestData for the host
+  if ( host.compare("") == 0 ) {
+    String requestString = (char *) requestData.data();
+    size_t beginHost = requestString.find("http");
+    if (beginHost != String::npos ) {
+      beginHost = requestString.find( "://", beginHost ) + 3;
+      size_t endHost = std::min( requestString.find( "/", beginHost ), requestString.find(" ", beginHost) );
+      if ( endHost > beginHost && endHost != String::npos ) {
+        host = requestString.substr( beginHost, endHost - beginHost );
+      }
+    }
+  }
+
+  printf("Looking for host(%s)\n", host.c_str());
+  // Find the remote address information
   struct hostent *newHostent = gethostbyname( host.c_str() );
   if ( newHostent == NULL ) {
     printf( "Could not find host from hostname(%s)\n", host.c_str() );
     return response;
   }
-
   memcpy( &server.sin_addr, newHostent->h_addr_list[ 0 ], ( size_t ) newHostent->h_length );
   server.sin_family = AF_INET;
   server.sin_port = htons( ( uint16_t ) port );
 
+  // Connect to the remote host, bail if connection fails
   if ( connect( newSock, ( struct sockaddr * ) &server, sizeof( server ) ) < 0 ) {
     printf( "Connect failed for host(%s). Error: %d\n", host.c_str(), errno );
     return response;
   }
 
+  // Prepare the outgoing buffer
   ssize_t bytesToSend = requestData.size();
   BYTE *sendBuffer = requestData.data();
 
+  // Send the request to the remote server
   while ( bytesToSend > 0 ) {
     ssize_t bytesSent = send( newSock, sendBuffer, requestData.size(), 0 );
     bytesToSend -= bytesSent;
@@ -388,11 +474,12 @@ ByteVector fetchResponse( String host, String httpVersion, ByteVector requestDat
     }
   }
 
+  // Prepare the incoming buffer
   unsigned char readBuffer[MSG_SIZE];
   bzero( readBuffer, MSG_SIZE );
   ssize_t bytesReceived;
 
-  // If request is HTTP/1.0 just wait until the client closes the stream
+  // If request is HTTP/1.0 just read data until the client closes the stream
   if ( httpVersion.compare( "HTTP/1.0" ) == 0 ) {
     bytesReceived = recv( newSock, readBuffer, MSG_SIZE - 1, 0 );
     while ( bytesReceived > 0 ) {
@@ -401,7 +488,7 @@ ByteVector fetchResponse( String host, String httpVersion, ByteVector requestDat
       bytesReceived = recv( newSock, readBuffer, MSG_SIZE - 1, 0 );
     }
   }
-    // If request is HTTP/1.1 we need to find out if it uses Content-Length or chunked encoding
+    // If request is HTTP/1.1 we need to find out if it uses Content-Length or chunked encoding by parsing the headers
   else {
     // Read the header a byte at a time so we don't read any of the body
     std::string header = "";
@@ -460,38 +547,46 @@ ByteVector fetchResponse( String host, String httpVersion, ByteVector requestDat
     }
 
     else {
+      // Bad things have happened.  We could assume things like the server will close the connection
+      // or that we can close the connection after a timeout, but this isn't specified in RFC2616
       printf( "No Content-Length or Transfer-Encoding header received.\n" );
+      return response;
     }
 
     // Put the headers back in the response
     response.insert( response.begin(), header.begin(), header.end() );
   }
 
+  // Handle errors, ignore timeouts (errno == 11)
   if ( bytesReceived == -1 && errno != 11 ) {
     printf( "recv failed for host(%s), errno(%d)\n", host.c_str(), errno );
   }
 
   return response;
 }
-//
-//void dumpCache() {
-//  typedef std::unordered_map<String, CachedResponse *>::iterator it_type;
-//  for ( it_type i = cache.begin(); i != cache.end(); i++ ) {
-//    printf( "Cache entry(%s): %s\n\n", i->first.c_str(), i->second->data.data() );
-//  }
-//}
 
+
+/**
+ * Thread for handling an incoming request and outgoing response
+ *
+ * @param incomingSocket
+ * @return unused
+ */
 void *requestCycle( void *incomingSocket ) {
   //Get the socket descriptor
   int clientSocket = *( int * ) incomingSocket;
 
+  // Get and validate the incoming request
   ByteVector requestData = getRequest( clientSocket );
   Request *request = parseRequest( requestData.data(), requestData.size() );
 
+  // Handle validation errors
   if ( request->error.compare( "" ) != 0 ) {
     sendResponse( ByteVector( request->error.begin(), request->error.end() ), clientSocket );
+    return 0;
   }
 
+  // Create a new key for the hash
   BYTE *hash = ( BYTE * ) malloc( SHA256_DIGEST_LENGTH * sizeof( BYTE ) );
   String key = getKey( request->headers[ "Host" ], request->uri );
   SHA256( ( BYTE * ) key.c_str(), key.length(), hash );
@@ -499,11 +594,13 @@ void *requestCycle( void *incomingSocket ) {
   time_t currentTime;
   time( &currentTime );
 
-//  dumpCache();
+  // Log why the page was not retrieved from the cache
   if ( cache.find( key ) == cache.end() ) { printf( "Cached response not found\n" ); }
   else if ( cache[ key ]->expireTime < currentTime ) { printf( "Cached response expired\n" ); }
 
+  // Handle a page not found in the cache or with an expired entry
   if ( cache.find( key ) == cache.end() || cache[ key ]->expireTime < currentTime ) {
+
     // Get the request form the remote server
     ByteVector responseData =
       fetchResponse( request->headers[ "Host" ], request->version, requestData );
@@ -517,6 +614,7 @@ void *requestCycle( void *incomingSocket ) {
     newCacheEntry->data = responseData;
     newCacheEntry->expireTime = currentTime + CACHE_TTL;
     newCacheEntry->host = request->headers[ "Host" ];
+    newCacheEntry->uri = request->uri;
 
     putInCache( key, newCacheEntry );
 
@@ -531,6 +629,7 @@ void *requestCycle( void *incomingSocket ) {
     }
   }
   else {
+    // Log a successfully retrieved response from cache
     printf( "Found cached response for key(%s)\n", key.c_str() );
     sendResponse( cache[ key ]->data, clientSocket );
     closeSocket( clientSocket );
@@ -561,6 +660,8 @@ bool isKeepAlive( String connectionString ) {
 
 
 /**
+ * This creates a uniform key for the cache, to be consistent between client requests and crawl requests
+ *
  * @param host - domain name for the resource, with or without protocol
  * @param url - path to the resource, can be absolute or relative
  * @return key for creating a hash value for the cache
@@ -586,12 +687,20 @@ String getKey( String host, String url ) {
     url = url.substr( 1, url.length() - 2 );
   }
 
+  // Don't include anchors in key
+  size_t anchorPosition = url.find( "#" );
+  if ( anchorPosition != std::string::npos ) {
+    url = url.substr( anchorPosition, url.length() - anchorPosition );
+  }
+
   return host + "/" + url;
 }
 
 /**
   * This method creates a Request object from an HTTP request string.
   * If the method or version is invalid or unsupported, then it puts an error response in request.error
+  *
+  * (Mostly reused from PA2)
   *
   * @param requestString - contains entire HTTP request
   * @param requestStringLength - length of requestString
